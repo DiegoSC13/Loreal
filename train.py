@@ -62,7 +62,7 @@ torch.manual_seed(0)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 #Creo directorio con fechas para no sobreescribir
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+timestamp = datetime.now().strftime("%y-%m-%d_%H_%M_%S")
 save_path = os.path.join(args.output_path, f"run_{timestamp}")
 os.makedirs(save_path, exist_ok=True)
 
@@ -177,15 +177,15 @@ for epoch in range(args.epochs):
     f"Loss: {running_loss/len(train_dataloader):.6f}, "
     f"LR: {optimizer.param_groups[0]['lr']:.2e}\n"
 )
-
-    ckpt_path = os.path.join(save_path, f"epoch_{epoch+1}.pth")
-    torch.save({
-        "epoch": epoch + 1,
-        "state_dict": model.state_dict(),
-        "optimizer": optimizer.state_dict(),
-        "scheduler": scheduler.state_dict(),
-        "loss": running_loss/len(train_dataloader)
-    }, ckpt_path)
+    if (epoch+1) % 10 == 0:
+        ckpt_path = os.path.join(save_path, f"epoch_{epoch+1}.pth")
+        torch.save({
+            "epoch": epoch + 1,
+            "state_dict": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
+            "loss": running_loss/len(train_dataloader)
+        }, ckpt_path)
 
 # Initialize the trainer
 # trainer = dinv.Trainer(

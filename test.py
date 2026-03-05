@@ -7,6 +7,7 @@ from skimage.metrics import peak_signal_noise_ratio as psnr
 from skimage.metrics import structural_similarity as ssim
 
 from model import FastDVDnet
+from functions_valery import linear_transform   
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -14,11 +15,11 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # CONFIGURACIÓN
 # -----------------------
 
-checkpoint = "./first_try/ckpts/epoch_91.pth"
+checkpoint = "./results/run_26-03-05_19_20_15/epoch_50.pth"
 sequence_path = "/mnt/bdisk/dewil/loreal_POC2/sequences_for_self-supervised_tests/easier/017"   # carpeta con los 10 frames
-output_path = "./first_try/output_17"
-
+output_path = "./results/output_17"
 os.makedirs(output_path, exist_ok=True)
+preprocessing_parameters_path = os.path.join(sequence_path, "pre-processing.txt")
 
 # -----------------------
 # CARGAR MODELO
@@ -73,20 +74,22 @@ with torch.no_grad():
         out = model(x)
         out = out.squeeze().cpu().numpy()
         print('Media de out: ', np.mean(out**2))
-
         recons.append(out)
 
         psnr_vals.append(psnr(gt, out, data_range=1))
         ssim_vals.append(ssim(gt, out, data_range=1))
 
-        # guardar imagen
-        out_img = (out*255).astype(np.uint8)
-        Image.fromarray(out_img).save(
-            os.path.join(output_path, f"recon_{i:03d}.png")
-        )
+        # Save image
+        [a,b] = np.loadtxt(preprocessing_parameters_path)
+        out_antitransformed = linear_transform(out*9000, a, b, inverse=True)
+        #out_img = (out*255).astype(np.uint8)
+        print(f"Minimum value of the antitransformed output: {np.min(out_antitransformed)}")
+        print(f"Maximum value of the antitransformed output: {np.max(out_antitransformed)}")
+        out_int16 = (out_antitransformed).astype(np.int16)
+        Image.fromarray(out_int16).save(os.path.join(output_path, f"recon_{i:03d}.png"))
 
 # -----------------------
-# RESULTADOS
+# RESULTS
 # -----------------------
 
 print("PSNR medio:", np.mean(psnr_vals))

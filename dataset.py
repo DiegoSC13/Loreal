@@ -110,7 +110,7 @@ class FastDVDnetDataset(Dataset):
         stack = torch.cat(frames, dim=0)  # [5,H,W]
 
         # Transformación lineal
-        stack = linear_transform(stack, a, b)
+        stack = linear_transform(stack, a, b)  / 9000
 
         # Crop aleatorio
         if self.patch_size is not None:
