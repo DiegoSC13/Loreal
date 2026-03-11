@@ -42,6 +42,8 @@ parser.add_argument("--momentum", type=float, default=(0.9, 0.9), help="Gradient
 parser.add_argument("--batch_size", type=int, default=32) #Default of SSIBench, not sure if it's the best option here
 parser.add_argument("--epochs", type=int, default=50)
 parser.add_argument("--lr", type=float, default=1e-4)
+parser.add_argument("--scheduler_step_size", type=int, default=50)
+parser.add_argument("--scheduler_gamma", type=float, default=0.1)
 parser.add_argument("--num_workers", type=int, default=0)
 parser.add_argument("--patch_size", type=int, nargs=2, default=None,
                     help="Tamaño del recorte aleatorio, ej: --patch_size 128 128")
@@ -128,7 +130,7 @@ loss_fn = get_loss(
 
 # choose optimizer and scheduler
 optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-8)
-scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.1) #Quiero multiplicar el lr por 0.1 cada 50 epocas
+scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.scheduler_step_size, gamma=args.scheduler_gamma) #Quiero multiplicar el lr por 0.1 cada 50 epocas
 # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=int(args.epochs * 0.8) + 1)
 
 # start with a pretrained model to reduce training time
@@ -175,9 +177,10 @@ for epoch in range(args.epochs):
     print(
     f"Epoch {epoch+1}, "
     f"Loss: {running_loss/len(train_dataloader):.6f}, "
-    f"LR: {optimizer.param_groups[0]['lr']:.2e}\n"
+    f"lr: {optimizer.param_groups[0]['lr']:.2e}\n"
 )
-    if (epoch+1) % 10 == 0:
+    #Printeo cada 10 epochs
+    if (epoch+1) % 10 == 0: 
         ckpt_path = os.path.join(save_path, f"epoch_{epoch+1}.pth")
         torch.save({
             "epoch": epoch + 1,
@@ -187,7 +190,8 @@ for epoch in range(args.epochs):
             "loss": running_loss/len(train_dataloader)
         }, ckpt_path)
 
-# Initialize the trainer
+# While I'm debugging I shouldn't use the trainer, after I get everything to work it might be a good idea change to this (not sure)
+# Initialize DeepInverse trainer
 # trainer = dinv.Trainer(
 #     model=model,
 #     epochs=args.epochs,
