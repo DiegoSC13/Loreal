@@ -6,6 +6,7 @@ import numpy as np
 from pathlib import Path
 from torchvision.io import read_image
 from functions_valery import *
+from utils import *
 import imageio.v3 as iio
 
 #No hace nada, simplemente devuelve imagen ruidosa.
@@ -54,15 +55,20 @@ class FastDVDnetDataset(Dataset):
 
         for base_dir in base_dirs:
             base_dir = Path(base_dir)
+            print(f'{base_dir=}')
             if not base_dir.exists():
+                print(f'base_dirs does not exist, skipping')
                 continue
 
             for seq in base_dir.iterdir():
                 if not seq.is_dir():
+                    print(f'Sequence {seq} is not a directory, skipping')
                     continue
 
                 preproc_file = seq / "pre-processing.txt"
+                print("Chequeando archivo:", preproc_file.resolve())
                 if not preproc_file.exists():
+                    print(f'There is not pre-processing.txt file, skipping')
                     continue
 
                 a, b = np.loadtxt(preproc_file)
@@ -71,6 +77,7 @@ class FastDVDnetDataset(Dataset):
                     frames = sorted(seq.glob(f"{channel_prefix}*.tif"))
 
                     if len(frames) < 5:
+                        print(f'Sequence frames is {len(frames)}, which is lower than 5. Skipping')
                         continue
 
                     for i in range(2, len(frames) - 2):
@@ -109,10 +116,13 @@ class FastDVDnetDataset(Dataset):
         frames = [self._read_tif(p) for p in stack_paths]
         stack = torch.cat(frames, dim=0)  # [5,H,W]
 
-        # Transformación lineal
-        stack = linear_transform(stack, a, b)  / 9000
+        # # Valery's linear transform
+        # stack = linear_transform(stack, a, b)  / 9000
 
-        # Crop aleatorio
+        #Resampling, this way all sequences end up on the same noise distribution
+        stack = resample_poisson_sequence(stack, a) #Is 1.4 by default 
+
+        # Random crop
         if self.patch_size is not None:
             H, W = stack.shape[1:]
             ph, pw = self.patch_size
@@ -122,6 +132,6 @@ class FastDVDnetDataset(Dataset):
                 left = torch.randint(0, W - pw + 1, (1,)).item()
                 stack = stack[:, top:top + ph, left:left + pw]
 
-        target = stack[2:3, :, :].clone()  # frame central [1,H,W]
+        target = stack[2:3, :, :].clone()  # Central frame [1,H,W]
         
         return stack, target  # [5,H,W], [1,H,W]

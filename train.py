@@ -39,7 +39,7 @@ parser.add_argument("--gamma", type=float, default=None) #Poisson scalar factor
 parser.add_argument("--step_size", type=float, default=(1e-5, 1e-5), help="Gradient step size") #UNSURE and PG-UNSURE 
 parser.add_argument("--momentum", type=float, default=(0.9, 0.9), help="Gradient momentum")    #UNSURE and PG-UNSURE 
 
-parser.add_argument("--batch_size", type=int, default=32) #Default of SSIBench, not sure if it's the best option here
+parser.add_argument("--batch_size", type=int, default=32) #Default of SSIBench is 32, not sure if it's the best option here
 parser.add_argument("--epochs", type=int, default=50)
 parser.add_argument("--lr", type=float, default=1e-4)
 parser.add_argument("--scheduler_step_size", type=int, default=50)
@@ -77,15 +77,27 @@ batch_size = args.batch_size if torch.cuda.is_available() else 1
 
 # Dataset preparation
 patch_size = tuple(args.patch_size) if args.patch_size else None
-base_dirs = [
-    "/mnt/bdisk/dewil/loreal_POC2/sequences_for_self-supervised_tests/easier",
-    "/mnt/bdisk/dewil/loreal_POC2/sequences_for_self-supervised_tests/difficult"
-    # "/Users/diegosilveracoeff/Desktop/PhD/data/easier"
-]
+
+root_dir = '/mnt/bdisk/dewil/loreal_POC2/sequences_almost_Poisson'
+subdirs = []
+for root, dirs, files in os.walk(root_dir, followlinks=True):
+    # excluir check del recorrido
+    dirs[:] = [d for d in dirs if d != "check"]
+    for d in dirs:
+        subdirs.append(os.path.join(root, d))
+
+base_dirs = [root_dir] #subdirs
+# [
+#     "/mnt/bdisk/dewil/loreal_POC2/sequences_for_self-supervised_tests/easier",
+#     "/mnt/bdisk/dewil/loreal_POC2/sequences_for_self-supervised_tests/difficult"
+#     # "/Users/diegosilveracoeff/Desktop/PhD/data/easier"
+# ]
 # dataset = LorealDataset(image_paths=args.image_paths,
 #                         transform=args.transform,
 #                         patch_size=patch_size)
- 
+print(f'{base_dirs=}')
+#print(f'{root_dir}') 
+
 dataset = FastDVDnetDataset(
     base_dirs=base_dirs,
     patch_size=patch_size
@@ -134,21 +146,21 @@ scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.scheduler_
 # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=int(args.epochs * 0.8) + 1)
 
 # start with a pretrained model to reduce training time
+
 if args.ckpt:
     ckpt = torch.load(args.ckpt, map_location=device)
 
-    state_dict = ckpt.get("state_dict", ckpt)
-    scheduler.load_state_dict(ckpt["scheduler"])
+# Ajustar primera convolución si es necesario (por ejemplo, pasar de 1 a 3 canales)
+for key in list(ckpt.keys()):
+    if "inc.convblock.0.weight" in key and ckpt[key].shape[1] == 1:
+        w = ckpt[key]
+        # Repetir el canal para 3 entradas y normalizar
+        ckpt[key] = w.repeat(1, 3, 1, 1) / 3
 
-    # Adaptar primera conv si hace falta, ASK VALERY
-    for key in list(state_dict.keys()):
-        if "inc.convblock.0.weight" in key and state_dict[key].shape[1] == 1:
-            w = state_dict[key]
-            state_dict[key] = w.repeat(1, 3, 1, 1) / 3
+model = FastDVDnet(num_input_frames=5).to(device)
+model.load_state_dict(ckpt, strict=False)
 
-    model.load_state_dict(state_dict, strict=False)
-
-    print("Loaded model weights (optimizer reinitialized).")
+print("Loaded model weights (optimizer reinitialized).")
 
 verbose = True  # print training information
 
