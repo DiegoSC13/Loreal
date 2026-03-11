@@ -2,3 +2,4 @@ results/
 *.pyc
 .DS_Store
 trying_utils.ipynb
+*.txt
