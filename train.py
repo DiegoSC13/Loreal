@@ -1,31 +1,26 @@
 
 from argparse import ArgumentParser
+import os
+from datetime import datetime
+from matplotlib import pyplot as plt
+import logging
+import sys
+import shlex
+import platform
+
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader, random_split
-# from tqdm import tqdm
-import deepinv as dinv
 
 from dataset import LorealDataset, FastDVDnetDataset
 from model import FastDVDnet
 from losses import get_loss
 from physics import get_physics
 
-from pathlib import Path
-import os
-
-from torchvision import transforms, datasets
-
-from deepinv.utils import get_data_home
-from deepinv.models.utils import get_weights_url
-
-# importa tu modelo
-from model import FastDVDnet
-from losses import get_loss
-
-from datetime import datetime
-import os
-
+# This allows for accelerated Tensor Core training; cryoDRGN uses it. I've never been able to use it, but I want to try it someday.
+# try:
+#     import apex.amp as amp  
+# except ImportError:
+#     pass
 
 parser = ArgumentParser()
 parser.add_argument("--image_paths", type=str, nargs='+', required=True,
@@ -51,22 +46,26 @@ parser.add_argument("--transform", type=str, default=None,
                     help="Nombre de la transformación a aplicar (opcional)")
 args = parser.parse_args()
 
-# =========================
-# CONFIG
-# =========================
+#Creo directorio con fechas para no sobreescribir
+timestamp = datetime.now().strftime("%y-%m-%d_%H-%M-%S")
+save_path = os.path.join(args.output_path, f"train_{timestamp}")
+os.makedirs(save_path, exist_ok=True)
 
-# BASE_DIR = Path(".")
-# DATA_DIR = BASE_DIR / "input_images"
-# CKPT_DIR = BASE_DIR / "ckpts"
+log_path = os.path.join(args.output_path, f"log_{timestamp}.log")
+
+logger = logging.getLogger(__name__)
+logger.info(f"Python version: {platform.python_version()}")
+
+# Esto genera el comando completo tal como se ejecutó
+command_used = " ".join(sys.argv)
+
+command_used = shlex.join(sys.argv)
+#logger.info(args)
+logger.info(f"Command used: {command_used}")
 
 # Set the global random seed and select device
 torch.manual_seed(0)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-#Creo directorio con fechas para no sobreescribir
-timestamp = datetime.now().strftime("%y-%m-%d_%H_%M_%S")
-save_path = os.path.join(args.output_path, f"run_{timestamp}")
-os.makedirs(save_path, exist_ok=True)
 
 #Checkpoints dir
 ckpt_path = os.path.join(save_path, "ckpts") 
@@ -86,17 +85,9 @@ for root, dirs, files in os.walk(root_dir, followlinks=True):
     for d in dirs:
         subdirs.append(os.path.join(root, d))
 
-base_dirs = [root_dir] #subdirs
-# [
-#     "/mnt/bdisk/dewil/loreal_POC2/sequences_for_self-supervised_tests/easier",
-#     "/mnt/bdisk/dewil/loreal_POC2/sequences_for_self-supervised_tests/difficult"
-#     # "/Users/diegosilveracoeff/Desktop/PhD/data/easier"
-# ]
-# dataset = LorealDataset(image_paths=args.image_paths,
-#                         transform=args.transform,
-#                         patch_size=patch_size)
+base_dirs = [root_dir] 
 print(f'{base_dirs=}')
-#print(f'{root_dir}') 
+
 
 dataset = FastDVDnetDataset(
     base_dirs=base_dirs,
@@ -143,14 +134,11 @@ loss_fn = get_loss(
 # choose optimizer and scheduler
 optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-8)
 scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.scheduler_step_size, gamma=args.scheduler_gamma) #Quiero multiplicar el lr por 0.1 cada 50 epocas
-# scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=int(args.epochs * 0.8) + 1)
-
-# start with a pretrained model to reduce training time
 
 if args.ckpt:
     ckpt = torch.load(args.ckpt, map_location=device)
 
-# Ajustar primera convolución si es necesario (por ejemplo, pasar de 1 a 3 canales)
+# Ajustar primera convolución (pesos y modelo de valery tienen diferentes dimensiones en el inc.convblock.0)
 for key in list(ckpt.keys()):
     if "inc.convblock.0.weight" in key and ckpt[key].shape[1] == 1:
         w = ckpt[key]
@@ -163,6 +151,8 @@ model.load_state_dict(ckpt, strict=False)
 print("Loaded model weights (optimizer reinitialized).")
 
 verbose = True  # print training information
+
+epoch_losses = []
 
 for epoch in range(args.epochs):
     model.train()
@@ -183,14 +173,17 @@ for epoch in range(args.epochs):
 
         running_loss += loss.item()
     
-    # Para actualizar lr
+    epoch_loss = running_loss / len(train_dataloader)
+    epoch_losses.append(epoch_loss)
     scheduler.step()
 
     print(
     f"Epoch {epoch+1}, "
-    f"Loss: {running_loss/len(train_dataloader):.6f}, "
+    f"Loss: {epoch_loss:.8f}, "
     f"lr: {optimizer.param_groups[0]['lr']:.2e}\n"
 )
+    logger.info(f"Epoch {epoch+1}/{args.epochs} - Loss: {epoch_loss:.4f} - Learning Rate: {optimizer.param_groups[0]['lr']:.2e}")
+
     #Printeo cada 10 epochs
     if (epoch+1) % 10 == 0: 
         ckpt_path = os.path.join(save_path, f"epoch_{epoch+1}.pth")
@@ -201,6 +194,15 @@ for epoch in range(args.epochs):
             "scheduler": scheduler.state_dict(),
             "loss": running_loss/len(train_dataloader)
         }, ckpt_path)
+
+plt.figure()
+plt.plot(epoch_losses)
+plt.xlabel("Epoch")
+plt.ylabel("Loss")
+plt.title("Training Loss")
+plt.grid(True)
+plt.show()
+plt.savefig(os.path.join(save_path, "training_loss.png"), dpi=200)
 
 # While I'm debugging I shouldn't use the trainer, after I get everything to work it might be a good idea change to this (not sure)
 # Initialize DeepInverse trainer
@@ -228,16 +230,18 @@ for epoch in range(args.epochs):
 # model = trainer.train()
 # print(trainer.model is model)
 
-model.eval()  # importante
-with torch.no_grad():
-    batch = next(iter(train_dataloader))  # toma el primer batch
-    if isinstance(batch, (tuple, list)):
-        y = batch[0].to(device)  # ajusta según tu dataset
-    else:
-        y = batch.to(device)
 
-    out = model(y)
-    print("Print de control: Salida media del modelo:", out.mean().item())
+
+# model.eval()  # importante
+# with torch.no_grad():
+#     batch = next(iter(train_dataloader))  # toma el primer batch
+#     if isinstance(batch, (tuple, list)):
+#         y = batch[0].to(device)  # ajusta según tu dataset
+#     else:
+#         y = batch.to(device)
+
+#     out = model(y)
+#     print("Print de control: Salida media del modelo:", out.mean().item())
 
 # x_hat = model(y)
 # loss_val = loss_fn(x_hat, y, physics=physics, model=model)  # o loss_fn(x_hat, y, physics) según tu get_loss

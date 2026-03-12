@@ -1,5 +1,6 @@
 import os
 import numpy as np
+import torch
 
 def generar_lista_tif(directorio, archivo_salida="lista_tif.txt"):
     lista_tif = []
@@ -42,4 +43,4 @@ def resample_poisson_sequence(y, gamma, gamma_target=1.4, seed=None):
     # Paso 3: Escalar al gamma_target
     y_norm = gamma_target * k_target
 
-    return y_norm
+    return torch.from_numpy(y_norm).to(torch.float32)
