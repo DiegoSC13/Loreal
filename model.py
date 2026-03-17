@@ -1,7 +1,35 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 kernel_size=4
+
+def crop_like(src, tgt):
+    _, _, h, w = tgt.shape
+    src_h, src_w = src.shape[2], src.shape[3]
+    h = min(h, src_h)
+    w = min(w, src_w)
+    return src[:, :, :h, :w].contiguous()
+
+def match_size(src, tgt):
+    return F.interpolate(src, size=tgt.shape[2:], mode='bilinear', align_corners=False)
+
+def debug_gradients(tensors_dict):
+    """
+    tensors_dict: diccionario de nombre de tensor -> tensor
+    Imprime para cada tensor:
+        - tipo
+        - requires_grad
+        - grad_fn
+        - shape
+    """
+    print("=== DEBUG GRADIENTS ===")
+    for name, tensor in tensors_dict.items():
+        if not isinstance(tensor, torch.Tensor):
+            print(f"{name}: NOT A TENSOR! type={type(tensor)}")
+            continue
+        print(f"{name}: shape={tensor.shape}, requires_grad={tensor.requires_grad}, grad_fn={tensor.grad_fn}")
+    print("========================\n")
 
 class CvBlock(nn.Module):
 	'''(Conv2d => LeakyReLU) x 2'''
@@ -24,7 +52,7 @@ class InputCvBlock(nn.Module):
 		self.interm_ch = 30
 		self.convblock = nn.Sequential(
 			nn.Conv2d(num_in_frames, num_in_frames*self.interm_ch, \
-					  kernel_size=kernel_size, padding=1),
+					  kernel_size=kernel_size, padding=1, groups=num_in_frames),
 			nn.LeakyReLU(inplace=True),
 			nn.Conv2d(num_in_frames*self.interm_ch, out_ch, kernel_size=kernel_size, padding=2),
 			nn.LeakyReLU(inplace=True)
@@ -100,26 +128,81 @@ class DenBlock(nn.Module):
 			self.weight_init(m)
 
 	def forward(self, x):
-		'''Args:
-			inX: Tensor, [N, C, H, W] in the [0., 1.] range
-			noise_map: Tensor [N, 1, H, W] in the [0., 1.] range
-		'''
-		# Input convolution block (with Diego's modifications)
 		in0, in1, in2 = x[:,0:1,...], x[:,1:2,...], x[:,2:3,...]
-		x0 = self.inc(torch.cat((in0, in1, in2), dim=1))
-		# Downsampling
+		x0 = self.inc(torch.cat((in0, in1, in2), dim=1)) #Check Valery's model, I change something here
+
+		# Debug: después de input block
+		# debug_gradients({
+		# 	"in0": in0, "in1": in1, "in2": in2,
+		# 	"x0": x0
+		# })
+
 		x1 = self.downc0(x0)
 		x2 = self.downc1(x1)
-		# Upsampling
+
+		# debug_gradients({
+		# 	"x1": x1,
+		# 	"x2": x2
+		# })
+
 		x2 = self.upc2(x2)
-		x1 = self.upc1(x1+x2)
-		# Estimation
-		x = self.outc(x0+x1)
+		x1 = self.upc1(match_size(x1, x2) + x2)
+
+		# debug_gradients({
+		# 	"x2 (after upc2)": x2,
+		# 	"x1 (after upc1 + skip)": x1
+		# })
+
+		x0 = self.outc(match_size(x0, x1) + x1)
+
+		# debug_gradients({
+		# 	"x0 (after outc)": x0
+		# })
 
 		# Residual
-		x = in1 - x
+		# scale_residual = 1e-4
+		# residual_scaled = (match_size(in1, x0) - x0) * scale_residual
+		# x = residual_scaled.clamp(min=1e-12)
+        
+		# DeepInv SURE Poisson expects strictly positive predictions. We use ReLU + small eps.
+		x = torch.relu(match_size(in1, x0) - x0) + 1e-6
 
+		# debug_gradients({
+		# 	"x (final output)": x
+		# })
+		# print('x0, x1, x2 requires_grad:', x0.requires_grad, x1.requires_grad, x2.requires_grad)
+		# print('Final output requires_grad:', x.requires_grad)
+		# print('Mean absolute values:', x0.abs().mean().item(), x1.abs().mean().item(), x2.abs().mean().item())
 		return x
+		# '''Args:
+		# 	inX: Tensor, [N, C, H, W] in the [0., 1.] range
+		# 	noise_map: Tensor [N, 1, H, W] in the [0., 1.] range
+		# '''
+		# # Input convolution block (with Diego's modifications)
+		# in0, in1, in2 = x[:,0:1,...], x[:,1:2,...], x[:,2:3,...]
+		# x0 = self.inc(torch.cat((in0, in1, in2), dim=1))
+		# # Downsampling
+		# x1 = self.downc0(x0)
+		# x2 = self.downc1(x1)
+		# # Upsampling
+		# x2 = self.upc2(x2)
+		# #x1 = self.upc1(x1+x2)
+		# # x1 = self.upc1(crop_like(x1, x2) + x2)
+		# # Estimation
+		# #x = self.outc(x0+x1) 
+		# # x0 = self.outc(crop_like(x0, x1) + x1)
+		# x1 = self.upc1(match_size(x1, x2) + x2)
+		# x0 = self.outc(match_size(x0, x1) + x1)
+		# print('x0, x1 y x2: ', x0.requires_grad, x1.requires_grad, x2.requires_grad)
+		# # Residual
+		# scale_residual = 1e-4
+		# residual_scaled = (in1 - x) * scale_residual
+		# x = F.relu(residual_scaled) + 1e-6  # garantiza gradientes y evita valores < 0
+		# #x = in1 - x
+		# print('x0, x1, x2 requires_grad:', x0.requires_grad, x1.requires_grad, x2.requires_grad)
+		# print('Final output requires_grad:', x.requires_grad)
+		# print('Mean absolute values:', x0.abs().mean().item(), x1.abs().mean().item(), x2.abs().mean().item())
+		# return x
 
 class FastDVDnet(nn.Module):
 	""" Definition of the FastDVDnet model.
@@ -179,16 +262,69 @@ class FastDVDnet(nn.Module):
 		x21 = self.temp1(x1_cat)
 		x22 = self.temp1(x2_cat)
 
+		# x20 = x20 / (x20.abs().mean() + 1e-6)
+		# x21 = x21 / (x21.abs().mean() + 1e-6)
+		# x22 = x22 / (x22.abs().mean() + 1e-6)
+
 		# Mostrar shapes después del primer stage
 		# print('Shape de x20 (después de temp1):', x20.shape)
 		# print('Shape de x21 (después de temp1):', x21.shape)
 		# print('Shape de x22 (después de temp1):', x22.shape)
 
 		# Segundo stage
-		x_cat_stage2 = torch.cat((x20, x21, x22), dim=1)
-		# print('Shape concatenada para temp2:', x_cat_stage2.shape)
+		#EDIT: Pruebo combatir el desvanecimiento de gradiente mandando la señal original sumada a la salida de temp1
+		#x_cat_stage2 = torch.cat((x20 + x1, x21 + x2, x22 + x3), dim=1)
+		x_cat_stage2 = torch.cat((
+			match_size(x20, x1) + x1,
+			match_size(x21, x2) + x2,
+			match_size(x22, x3) + x3
+		), dim=1)
 		x = self.temp2(x_cat_stage2)
+		# x_cat_stage2 = torch.cat((x20, x21, x22), dim=1)
+		# # print('Shape concatenada para temp2:', x_cat_stage2.shape)
+		# x = self.temp2(x_cat_stage2)
 
 		# print('Shape final de x (después de temp2):', x.shape)
 
 		return x
+
+
+class SureWrapper(nn.Module):
+    """
+    Adapta FastDVDnet para ser compatible con SurePoissonLoss de DeepInverse.
+
+    El problema: SurePoissonLoss asume que el modelo recibe y devuelve tensores
+    del mismo shape (el espacio de medición). FastDVDnet recibe 5 frames [B,5,H,W]
+    pero devuelve 1 frame [B,1,H,W], lo que rompe la fórmula SURE internamente.
+
+    La solución: presentar a la loss un modelo que recibe y devuelve [B,1,H,W].
+    Internamente, el wrapper guarda los 5 frames como contexto, y cuando la loss
+    perturba el frame central, lo sustituye en el stack antes de llamar a FastDVDnet.
+
+    Uso típico en el bucle de entrenamiento:
+        wrapper.set_context(stack)          # stack: [B, 5, H, W]
+        y_central = stack[:, 2:3, :, :]    # frame central: [B, 1, H, W]
+        output = wrapper(y_central)         # equivalente a model(stack)
+        loss = loss_fn(y_central, output, physics, wrapper)
+    """
+    def __init__(self, model: FastDVDnet):
+        super().__init__()
+        self.model = model
+        self._context = None  # [B, 5, H, W], se actualiza cada batch
+
+    def set_context(self, stack: torch.Tensor):
+        """Guarda el stack de 5 frames. Llamar antes de cada forward."""
+        self._context = stack.detach()
+
+    def forward(self, y_central, *args, **kwargs):
+        """
+        y_central: [B, 1, H, W] — el frame central (posiblemente perturbado por SURE).
+        Reconstruye el stack de 5 frames sustituyendo el frame central y llama a FastDVDnet.
+        """
+        if self._context is None:
+            raise RuntimeError("Llama a wrapper.set_context(stack) antes del forward.")
+        # Clonamos para no modificar el contexto original
+        stack = self._context.clone()
+        # Sustituimos solo el frame central (posición 2) con el y perturbado por SURE
+        stack[:, 2:3, :, :] = y_central
+        return self.model(stack)

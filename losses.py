@@ -104,7 +104,7 @@ def get_loss(loss_name,
 
         loss_fn = R2RLoss(
             noise_model="poisson",
-            gamma=gamma,
+            #gamma=gamma, Parece que el gamma va para physics, acá no lo necesito
             **kwargs
         )
 
