@@ -133,6 +133,8 @@ def main():
                         help="Directorio donde se guardan los .tif denoised")
     parser.add_argument("--patch_size",  type=int, nargs=2, default=None,
                         help="Crop central para inferencia, ej: --patch_size 256 256")
+    parser.add_argument("--test_indexes", type=str, default=None,
+                        help="Ruta al test_indices.txt generado durante el entrenamiento")
     args = parser.parse_args()
 
     device   = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -147,13 +149,26 @@ def main():
 
     wrapper = load_model(args.ckpt, device)
 
+    # Instanciar dataset igual que en train (sin patch_size, queremos frames completos)
+    dataset = FastDVDnetDataset(base_dirs=[args.base_dir], patch_size=None)
+    print(f"Stacks totales en dataset: {len(dataset.stacks)}")
+ 
+    # Filtrar por índices de test si se proporcionan
+    if args.test_indices:
+        indices = np.loadtxt(args.test_indices, dtype=int)
+        stacks_to_process = [dataset.stacks[i] for i in indices]
+        print(f"Procesando {len(stacks_to_process)} stacks del conjunto de test\n")
+    else:
+        stacks_to_process = dataset.stacks
+        print(f"Procesando todos los {len(stacks_to_process)} stacks (no se especificó test_indices)\n")
+ 
     n_saved = 0
-
+ 
     with torch.no_grad():
-        for seq_name, ch, stack_paths in iter_sequences(base_dir):
-            # Directorio de salida por secuencia (y canal si hay más de uno)
-            subdir_name = f"{seq_name}{('_' + ch.strip('_')) if ch else ''}"
-            seq_out_dir = out_root / subdir_name
+        for stack_paths, a, b in stacks_to_process:
+            # Directorio de salida: replica el nombre de la secuencia
+            seq_name = stack_paths[2].parent.name  # nombre del subdirectorio del frame central
+            seq_out_dir = out_root / seq_name
             seq_out_dir.mkdir(parents=True, exist_ok=True)
 
             # Leer stack

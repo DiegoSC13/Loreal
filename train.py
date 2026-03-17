@@ -8,6 +8,7 @@ import sys
 import shlex
 import platform
 import time
+import numpy as np
 
 import torch
 from torch.utils.data import DataLoader, random_split
@@ -86,7 +87,8 @@ command_used = shlex.join(sys.argv)
 logger.info(f"Command used: {command_used}")
 
 # Set the global random seed and select device
-torch.manual_seed(int(time.time()))
+# torch.manual_seed(int(time.time())) # Para tener distinta semilla en cada entrenamiento
+generator = torch.Generator().manual_seed(42) # Para tener reproducibilidad
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 #Checkpoints dir
@@ -124,10 +126,14 @@ target = target.to(device)
 # Dataloader preparation
 n_train = int(0.8 * len(dataset))
 n_test = len(dataset) - n_train
-train_dataset, test_dataset = random_split(dataset, [n_train, n_test])
+train_dataset, test_dataset = random_split(dataset, [n_train, n_test], generator=generator) #generator para reproducibilidad
 
 train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True)
 test_dataloader  = DataLoader(test_dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=False)
+
+#Para testing
+test_indices = test_dataset.indices
+np.savetxt(os.path.join(save_path, "test_indices.txt"), test_indices, fmt="%d")
 
 for x, target in train_dataloader:
     print("x shape after dataloader:", x.shape)
