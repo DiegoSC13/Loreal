@@ -49,8 +49,8 @@ class FastDVDnetDataset(Dataset):
         - Genera stacks de 5 frames
         - Crop aleatorio opcional
         """
-
         self.patch_size = patch_size
+        self.transform = transform
         self.stacks = []
 
         #Just to see which sequences I'm not using
@@ -144,15 +144,13 @@ class FastDVDnetDataset(Dataset):
         if self.patch_size is not None:
             H, W = stack.shape[1:]
             ph, pw = self.patch_size
-
             if H >= ph and W >= pw:
                 top = torch.randint(0, H - ph + 1, (1,)).item()
                 left = torch.randint(0, W - pw + 1, (1,)).item()
                 stack = stack[:, top:top + ph, left:left + pw]
-
+        if self.transform:
+            stack = self.transform(stack)
+        
         target = stack[2:3, :, :].clone()  # Central frame [1,H,W]
 
-       # print("Input min/max:", stack.min().item(), stack.max().item())
-       # print("Target min/max:", target.min().item(), target.max().item())
-        
         return stack, target  # [5,H,W], [1,H,W]

@@ -34,6 +34,7 @@ import imageio.v3 as iio
 from pathlib import Path
 
 from model import FastDVDnet, SureWrapper
+from dataset import FastDVDnetDataset
 
 
 # ─────────────────────────────────────────────
@@ -154,13 +155,13 @@ def main():
     print(f"Stacks totales en dataset: {len(dataset.stacks)}")
  
     # Filtrar por índices de test si se proporcionan
-    if args.test_indices:
-        indices = np.loadtxt(args.test_indices, dtype=int)
+    if args.test_indexes:
+        indices = np.loadtxt(args.test_indexes, dtype=int)
         stacks_to_process = [dataset.stacks[i] for i in indices]
         print(f"Procesando {len(stacks_to_process)} stacks del conjunto de test\n")
     else:
         stacks_to_process = dataset.stacks
-        print(f"Procesando todos los {len(stacks_to_process)} stacks (no se especificó test_indices)\n")
+        print(f"Procesando todos los {len(stacks_to_process)} stacks (no se especificó test_indexes)\n")
  
     n_saved = 0
  

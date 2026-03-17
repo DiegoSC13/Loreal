@@ -1,6 +1,7 @@
 import os
 import numpy as np
 import torch
+import random
 
 def generar_lista_tif(directorio, archivo_salida="lista_tif.txt"):
     lista_tif = []
@@ -44,3 +45,19 @@ def resample_poisson_sequence(y, gamma, gamma_target=1.4, seed=None):
     y_norm = gamma_target * k_target
 
     return torch.from_numpy(y_norm).to(torch.float32)
+
+class RandomD4:
+    """
+    Aplica una transformación del grupo D4 (rotaciones 90 + flips)
+    Funciona para [H,W], [C,H,W] o [T,H,W]
+    """
+    def __call__(self, x):
+        # Rotación
+        k = random.randint(0, 3)
+        x = torch.rot90(x, k, dims=[-2, -1])
+
+        # Flip horizontal
+        if random.random() < 0.5:
+            x = torch.flip(x, dims=[-1])
+
+        return x
