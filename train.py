@@ -7,12 +7,13 @@ import logging
 import sys
 import shlex
 import platform
+import time
 
 import torch
 from torch.utils.data import DataLoader, random_split
 
 from dataset import LorealDataset, FastDVDnetDataset
-from model import FastDVDnet
+from model import FastDVDnet, SureWrapper
 from losses import get_loss
 from physics import get_physics
 
@@ -21,6 +22,27 @@ from physics import get_physics
 #     import apex.amp as amp  
 # except ImportError:
 #     pass
+
+def check_checkpoint_loading_with_magnitude(model, ckpt):
+    """
+    Para cada parámetro del modelo:
+      - Verifica si existe en el checkpoint
+      - Compara shape
+      - Imprime magnitud media absoluta (mean(abs(param)))
+    """
+    for name, param in model.named_parameters():
+        if name in ckpt:
+            if param.shape == ckpt[name].shape:
+                status = "Cargado correctamente"
+                mag = ckpt[name].abs().mean().item()
+            else:
+                status = f"Shape mismatch (modelo {param.shape} vs ckpt {ckpt[name].shape})"
+                mag = ckpt[name].abs().mean().item()
+        else:
+            status = "✖ No existe en checkpoint, inicializado desde cero"
+            mag = param.abs().mean().item()
+        
+        print(f"{name:50s} | {status:50s} | mean(abs)={mag:.6f}")
 
 parser = ArgumentParser()
 parser.add_argument("--image_paths", type=str, nargs='+', required=True,
@@ -64,7 +86,7 @@ command_used = shlex.join(sys.argv)
 logger.info(f"Command used: {command_used}")
 
 # Set the global random seed and select device
-torch.manual_seed(0)
+torch.manual_seed(int(time.time()))
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 #Checkpoints dir
@@ -96,6 +118,8 @@ dataset = FastDVDnetDataset(
 
 stack, target = dataset[0]
 print(f"Stack shape: {stack.shape}, Target shape: {target.shape}\n")
+stack = stack.to(device)
+target = target.to(device)
 
 # Dataloader preparation
 n_train = int(0.8 * len(dataset))
@@ -111,7 +135,9 @@ for x, target in train_dataloader:
     break  # solo miro el primer batch
 
 # Choose model
-model=FastDVDnet(num_input_frames=5).to(device)
+model = FastDVDnet(num_input_frames=5).to(device)
+# Wrapper que adapta FastDVDnet (5 frames → 1 frame) a la interfaz que espera SurePoissonLoss
+wrapper = SureWrapper(model).to(device)
 
 # Choose physics
 physics = get_physics(
@@ -132,56 +158,56 @@ loss_fn = get_loss(
     )
 
 # choose optimizer and scheduler
-optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-8)
+optimizer = torch.optim.Adam(wrapper.parameters(), lr=args.lr, weight_decay=1e-8)
 scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.scheduler_step_size, gamma=args.scheduler_gamma) #Quiero multiplicar el lr por 0.1 cada 50 epocas
 
 if args.ckpt:
     ckpt = torch.load(args.ckpt, map_location=device)
-
-# Ajustar primera convolución (pesos y modelo de valery tienen diferentes dimensiones en el inc.convblock.0)
-for key in list(ckpt.keys()):
-    if "inc.convblock.0.weight" in key and ckpt[key].shape[1] == 1:
-        w = ckpt[key]
-        # Repetir el canal para 3 entradas y normalizar
-        ckpt[key] = w.repeat(1, 3, 1, 1) / 3
-
-model = FastDVDnet(num_input_frames=5).to(device)
-model.load_state_dict(ckpt, strict=False)
-
-print("Loaded model weights (optimizer reinitialized).")
-
-verbose = True  # print training information
+    state_dict = ckpt.get("state_dict", ckpt)  # compatible con ambos formatos
+    model.load_state_dict(state_dict, strict=False)
+    check_checkpoint_loading_with_magnitude(model, state_dict)
+    print("Loaded model weights (optimizer reinitialized).")
 
 epoch_losses = []
-
 for epoch in range(args.epochs):
-    model.train()
+    wrapper.train()
     running_loss = 0.0
-    
+    # Antes del loop de batches:
+    grad_accum = {name: 0.0 for name, p in model.named_parameters() if p.requires_grad}
+    n_batches = 0
     for i, (stack, target) in enumerate(train_dataloader):
-        stack = stack.to(device)   # [B, 5, H, W]
-        target = target.to(device) # [B, 1, H, W]
-        
-        optimizer.zero_grad()
-        output = model(stack)      # [B, 1, H, W]
+        stack = stack.to(device)           # [B, 5, H, W]
+        y_central = stack[:, 2:3, :, :]   # [B, 1, H, W]
 
-       # Loss DeepInverse
-        loss = loss_fn(output, target, physics, model)
-        loss = loss.mean()
+        wrapper.set_context(stack)         # detach interno, una sola vez
+        optimizer.zero_grad()
+
+        output = wrapper(y_central)        # forward
+        loss = loss_fn(y_central, output, physics, wrapper).mean()
         loss.backward()
         optimizer.step()
 
         running_loss += loss.item()
-    
+        for name, param in model.named_parameters():
+            if param.requires_grad and param.grad is not None:
+                grad_accum[name] += param.grad.abs().mean().item()
+        n_batches += 1
+
+    # # Diagnóstico de gradientes (una vez por época, último batch)
+    # for name, param in model.named_parameters():
+    #     if param.requires_grad and param.grad is not None:
+    #         print(f"{name} | grad={param.grad.abs().mean():.2e} | val={param.abs().mean():.2e}")
+
     epoch_loss = running_loss / len(train_dataloader)
     epoch_losses.append(epoch_loss)
-    scheduler.step()
-
+    scheduler.step()    
+    for name, avg_grad in grad_accum.items():
+        print(f"{name} | grad_mean_epoch={avg_grad / n_batches:.2e}")
     print(
     f"Epoch {epoch+1}, "
     f"Loss: {epoch_loss:.8f}, "
     f"lr: {optimizer.param_groups[0]['lr']:.2e}\n"
-)
+    )
     logger.info(f"Epoch {epoch+1}/{args.epochs} - Loss: {epoch_loss:.4f} - Learning Rate: {optimizer.param_groups[0]['lr']:.2e}")
 
     #Printeo cada 10 epochs

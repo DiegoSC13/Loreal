@@ -124,8 +124,7 @@ class FastDVDnetDataset(Dataset):
             img = img.permute(2, 0, 1)
             img = img.mean(dim=0, keepdim=True)
 
-        if img.max() > 1:
-            img = img / 65535.0  # asumir uint16 #EDIT: Y esto por qué? 
+        img = img / 255.0  
 
         return img
 
@@ -136,7 +135,7 @@ class FastDVDnetDataset(Dataset):
         stack = torch.cat(frames, dim=0)  # [5,H,W]
 
         # Valery's linear transform
-        stack = linear_transform(stack, a, b)  / 9000
+        # stack = linear_transform(stack, a, b) # / 9000
 
         # Resampling, this way all sequences end up on the same noise distribution (if they have the same x (not the case here))
         # stack = resample_poisson_sequence(stack, a) #Is 1.4 by default 
@@ -153,7 +152,7 @@ class FastDVDnetDataset(Dataset):
 
         target = stack[2:3, :, :].clone()  # Central frame [1,H,W]
 
-        print("Input min/max:", stack.min().item(), stack.max().item())
-        print("Target min/max:", target.min().item(), target.max().item())
+       # print("Input min/max:", stack.min().item(), stack.max().item())
+       # print("Target min/max:", target.min().item(), target.max().item())
         
         return stack, target  # [5,H,W], [1,H,W]
