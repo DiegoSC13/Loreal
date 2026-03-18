@@ -9,11 +9,12 @@ import shlex
 import platform
 import time
 import numpy as np
+import random
 
 import torch
 from torch.utils.data import DataLoader, random_split
 
-from dataset import LorealDataset, FastDVDnetDataset
+from dataset import LorealDataset, FastDVDnetDataset, get_valid_sequences
 from model import FastDVDnet, SureWrapper
 from losses import get_loss
 from physics import get_physics
@@ -102,38 +103,52 @@ batch_size = args.batch_size if torch.cuda.is_available() else 1
 patch_size = tuple(args.patch_size) if args.patch_size else None
 
 root_dir = '/mnt/bdisk/dewil/loreal_POC2/sequences_almost_Poisson'
-subdirs = []
+all_sequences_paths = []
 for root, dirs, files in os.walk(root_dir, followlinks=True):
     # excluir check del recorrido
     dirs[:] = [d for d in dirs if d != "check"]
     for d in dirs:
-        subdirs.append(os.path.join(root, d))
+        seq_path = os.path.join(root, d)
+        all_sequences_paths.append(seq_path)
 
-base_dirs = [root_dir] 
-print(f'{base_dirs=}')
+# Filtrar secuencias válidas antes de dividir
+valid_sequences_info = get_valid_sequences(all_sequences_paths, out_file=os.path.join(save_path, "sequences_left_out.txt"))
 
+# Shuffle and split sequences
+random.seed(42)
+random.shuffle(valid_sequences_info)
 
-dataset = FastDVDnetDataset(
-    base_dirs=base_dirs,
-    patch_size=patch_size
-)
+n_total = len(valid_sequences_info)
+n_train = int(0.7 * n_total)
+n_val = int(0.15 * n_total)
+n_test = n_total - n_train - n_val
 
-stack, target = dataset[0]
-print(f"Stack shape: {stack.shape}, Target shape: {target.shape}\n")
-stack = stack.to(device)
-target = target.to(device)
+train_info = valid_sequences_info[:n_train]
+val_info = valid_sequences_info[n_train:n_train + n_val]
+test_info = valid_sequences_info[n_train + n_val:]
+
+print(f"Total valid sequences: {n_total}")
+print(f"Train sequences: {len(train_info)}")
+print(f"Val sequences: {len(val_info)}")
+print(f"Test sequences: {len(test_info)}")
+
+train_dataset = FastDVDnetDataset(sequence_info=train_info, patch_size=patch_size)
+val_dataset = FastDVDnetDataset(sequence_info=val_info, patch_size=patch_size)
+test_dataset = FastDVDnetDataset(sequence_info=test_info, patch_size=patch_size)
+
+print(f"Train dataset size (stacks): {len(train_dataset)}")
+print(f"Val dataset size (stacks): {len(val_dataset)}")
+print(f"Test dataset size (stacks): {len(test_dataset)}")
 
 # Dataloader preparation
-n_train = int(0.8 * len(dataset))
-n_test = len(dataset) - n_train
-train_dataset, test_dataset = random_split(dataset, [n_train, n_test], generator=generator) #generator para reproducibilidad
-
 train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True)
+val_dataloader   = DataLoader(val_dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=False)
 test_dataloader  = DataLoader(test_dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=False)
 
-#Para testing
-test_indices = test_dataset.indices
-np.savetxt(os.path.join(save_path, "test_indices.txt"), test_indices, fmt="%d")
+# Guardar secuencias de test para referencia
+with open(os.path.join(save_path, "test_sequences.txt"), "w") as f:
+    for s_info in test_info:
+        f.write(f"{s_info[0]}\n")
 
 for x, target in train_dataloader:
     print("x shape after dataloader:", x.shape)
@@ -175,6 +190,7 @@ if args.ckpt:
     print("Loaded model weights (optimizer reinitialized).")
 
 epoch_losses = []
+val_losses = []
 for epoch in range(args.epochs):
     wrapper.train()
     running_loss = 0.0
@@ -204,6 +220,21 @@ for epoch in range(args.epochs):
     #     if param.requires_grad and param.grad is not None:
     #         print(f"{name} | grad={param.grad.abs().mean():.2e} | val={param.abs().mean():.2e}")
 
+    # Validation loop
+    wrapper.eval()
+    val_loss = 0.0
+    with torch.no_grad():
+        for i, (stack, target) in enumerate(val_dataloader):
+            stack = stack.to(device)
+            y_central = stack[:, 2:3, :, :]
+            wrapper.set_context(stack)
+            output = wrapper(y_central)
+            loss = loss_fn(y_central, output, physics, wrapper).mean()
+            val_loss += loss.item()
+    
+    avg_val_loss = val_loss / len(val_dataloader) if len(val_dataloader) > 0 else 0
+    val_losses.append(avg_val_loss)
+
     epoch_loss = running_loss / len(train_dataloader)
     epoch_losses.append(epoch_loss)
     scheduler.step()    
@@ -211,30 +242,34 @@ for epoch in range(args.epochs):
         print(f"{name} | grad_mean_epoch={avg_grad / n_batches:.2e}")
     print(
     f"Epoch {epoch+1}, "
-    f"Loss: {epoch_loss:.8f}, "
+    f"Loss: {epoch_loss:.8f}, Val Loss: {avg_val_loss:.8f}, "
     f"lr: {optimizer.param_groups[0]['lr']:.2e}\n"
     )
-    logger.info(f"Epoch {epoch+1}/{args.epochs} - Loss: {epoch_loss:.4f} - Learning Rate: {optimizer.param_groups[0]['lr']:.2e}")
+    logger.info(f"Epoch {epoch+1}/{args.epochs} - Loss: {epoch_loss:.4f} - Val Loss: {avg_val_loss:.4f} - Learning Rate: {optimizer.param_groups[0]['lr']:.2e}")
 
     #Printeo cada 10 epochs
     if (epoch+1) % 10 == 0: 
-        ckpt_path = os.path.join(save_path, f"epoch_{epoch+1}.pth")
+        this_ckpt_path = os.path.join(ckpt_path, f"epoch_{epoch+1}.pth")
         torch.save({
             "epoch": epoch + 1,
             "state_dict": model.state_dict(),
             "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(),
             "loss": running_loss/len(train_dataloader)
-        }, ckpt_path)
+        }, this_ckpt_path)
 
 plt.figure()
-plt.plot(epoch_losses)
+plt.plot(epoch_losses, label="Train Loss")
+plt.plot(val_losses, label="Val Loss")
 plt.xlabel("Epoch")
 plt.ylabel("Loss")
-plt.title("Training Loss")
+plt.legend()
+plt.title("Training vs Validation Loss")
 plt.grid(True)
 plt.show()
-plt.savefig(os.path.join(save_path, "training_loss.png"), dpi=200)
+plt.savefig(os.path.join(save_path, "loss_plot.png"), dpi=200)
+
+####################################################################
 
 # While I'm debugging I shouldn't use the trainer, after I get everything to work it might be a good idea change to this (not sure)
 # Initialize DeepInverse trainer

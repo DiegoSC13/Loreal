@@ -40,75 +40,112 @@ class LorealDataset(Dataset):
         j = torch.randint(0, W - pw, (1,)).item()
         return img[i:i+ph, j:j+pw]
 
+def get_valid_sequences(sequence_paths, out_file="sequences_left_out.txt"):
+    """
+    Filtra las secuencias que no cumplen con los requisitos:
+    - Debe existir pre-processing.txt
+    - El valor 'a' debe estar cerca de 1 (abs(a-1) <= 0.2)
+    - Debe haber archivos .tif
+    - Al menos uno de los canales (o la secuencia completa) debe tener >= 5 frames
+    """
+    valid_sequences = []
+    with open(out_file, "w") as f_out:
+        for seq in sequence_paths:
+            seq = Path(seq)
+            if not seq.is_dir():
+                continue
+            
+            preproc_file = seq / "pre-processing.txt"
+            if not preproc_file.exists():
+                f_out.write(f"{seq.name}, no pre-processing.txt file\n")
+                continue
+            
+            try:
+                a, b = np.loadtxt(preproc_file)
+            except Exception as e:
+                f_out.write(f"{seq.name}, error reading pre-processing.txt: {e}\n")
+                continue
+
+            if np.abs(a-1) > 0.2:
+                f_out.write(f"{seq.name}, a={a}\n")
+                continue
+            
+            tif_files = sorted(seq.glob("*.tif"))
+            if not tif_files:
+                continue
+            
+            # Verificar si hay suficientes frames en al menos un canal
+            names = [f.name for f in tif_files]
+            channels = []
+            if any("_c0_" in n for n in names):
+                channels.append("_c0_")
+            if any("_c1_" in n for n in names):
+                channels.append("_c1_")
+            if not channels:
+                channels = [""]
+            
+            has_enough_frames = False
+            for ch in channels:
+                if ch:
+                    frames = [f for f in tif_files if ch in f.name]
+                else:
+                    frames = tif_files
+                if len(frames) >= 5:
+                    has_enough_frames = True
+                    break
+            
+            if has_enough_frames:
+                valid_sequences.append((str(seq), float(a), float(b)))
+            else:
+                f_out.write(f"{seq.name}, not enough frames (min 5)\n")
+    
+    return valid_sequences
+
 class FastDVDnetDataset(Dataset):
-    def __init__(self, base_dirs, patch_size=None):
+    def __init__(self, sequence_info, patch_size=None, transform=None):
         """
         Dataset para FastDVDnet:
         - Soporta imágenes .tif
         - Aplica transformación lineal (a,b) desde pre_processing.txt
         - Genera stacks de 5 frames
         - Crop aleatorio opcional
+        
+        sequence_info: lista de tuples (path, a, b)
         """
         self.patch_size = patch_size
         self.transform = transform
         self.stacks = []
 
-        #Just to see which sequences I'm not using
-        out_file = "sequences_left_out.txt"
-        with open(out_file, "w") as f_out:
-            for base_dir in base_dirs:
-                base_dir = Path(base_dir)
-                # print(f'{base_dir=}')
-                if not base_dir.exists():
-                    # print(f'base_dirs does not exist, skipping')
+        for seq_path, a, b in sequence_info:
+            seq = Path(seq_path)
+            tif_files = sorted(seq.glob("*.tif"))
+            names = [f.name for f in tif_files]
+            channels = []
+            if any("_c0_" in n for n in names):
+                channels.append("_c0_")
+            if any("_c1_" in n for n in names):
+                channels.append("_c1_")
+            if not channels:
+                channels = [""]
+            
+            for ch in channels:
+                if ch:
+                    frames = sorted(f for f in tif_files if ch in f.name)
+                else:
+                    frames = sorted(tif_files)
+                
+                if len(frames) < 5:
                     continue
-                for seq in base_dir.iterdir():
-                    if not seq.is_dir():
-                        # print(f'Sequence {seq} is not a directory, skipping')
-                        continue
-                    preproc_file = seq / "pre-processing.txt"
-                    # print("Chequeando archivo:", preproc_file.resolve())
-                    if not preproc_file.exists():
-                        print(f'There is not pre-processing.txt file, skipping')
-                        f_out.write(f"{seq.name}, no pre-processing.txt file\n")
-                        continue
-                    a, b = np.loadtxt(preproc_file)
-                    if np.abs(a-1) > 0.2:
-                        print(f'In sequence {seq} the value of a is too far from 1, skipping')
-                        f_out.write(f"{seq.name}, a={a}\n")
-                        continue
-                    tif_files = sorted(seq.glob("*.tif"))
-                    if not tif_files:
-                        print(f"No tif files found in {seq}, skipping")
-                        continue
-                    names = [f.name for f in tif_files]
-                    channels = []
-                    if any("_c0_" in n for n in names):
-                        channels.append("_c0_")
-                    if any("_c1_" in n for n in names):
-                        channels.append("_c1_")
-                    if not channels:
-                        channels = [""]
-                    for ch in channels:
-                        if ch:
-                            frames = sorted(f for f in tif_files if ch in f.name)
-                        else:
-                            frames = sorted(tif_files)
-                        if len(frames) < 5:
-                            print(f'The number of sequence frames in {seq} for channel {ch or "single"} is {len(frames)}, which is lower than 5. Skipping')
-                            f_out.write(f"{seq.name}, Channel={ch or 'single'}, Number of frames={len(frames)}\n")
-                            continue
 
-                        # ahora sí armamos stacks solo dentro del canal
-                        for i in range(2, len(frames) - 2):
-                            stack_paths = [
-                                frames[i - 2],
-                                frames[i - 1],
-                                frames[i],
-                                frames[i + 1],
-                                frames[i + 2],
-                            ]
-                            self.stacks.append((stack_paths, float(a), float(b)))
+                for i in range(2, len(frames) - 2):
+                    stack_paths = [
+                        frames[i - 2],
+                        frames[i - 1],
+                        frames[i],
+                        frames[i + 1],
+                        frames[i + 2],
+                    ]
+                    self.stacks.append((stack_paths, float(a), float(b)))
 
     def __len__(self):
         return len(self.stacks)
