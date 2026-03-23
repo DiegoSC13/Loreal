@@ -5,11 +5,8 @@ import numpy as np
 
 from pathlib import Path
 from torchvision.io import read_image
-from functions_valery import *
 from utils import *
 import imageio.v3 as iio
-
-#No hace nada, simplemente devuelve imagen ruidosa.
 
 class LorealDataset(Dataset):
     def __init__(self, image_paths, transform=None, patch_size=None):
@@ -102,7 +99,7 @@ def get_valid_sequences(sequence_paths, out_file="sequences_left_out.txt"):
     return valid_sequences
 
 class FastDVDnetDataset(Dataset):
-    def __init__(self, sequence_info, patch_size=None, transform=None):
+    def __init__(self, sequence_info, patch_size=None, transform=None, data_scale=9000.0):
         """
         Dataset para FastDVDnet:
         - Soporta imágenes .tif
@@ -114,6 +111,7 @@ class FastDVDnetDataset(Dataset):
         """
         self.patch_size = patch_size
         self.transform = transform
+        self.data_scale = data_scale
         self.stacks = []
 
         for seq_path, a, b in sequence_info:
@@ -150,8 +148,14 @@ class FastDVDnetDataset(Dataset):
     def __len__(self):
         return len(self.stacks)
 
+    def make_divisible_by_4(self, img):
+        H, W = img.shape[-2], img.shape[-1]
+        H4 = (H // 4) * 4
+        W4 = (W // 4) * 4
+        return img[..., :H4, :W4]
+
     def _read_tif(self, path):
-        """Lee un .tif y lo convierte a tensor [1,H,W] normalizado"""
+        """Lee un .tif y lo convierte a tensor [1,H,W] sin normalizar (crudo)"""
         img = iio.imread(str(path))
         img = torch.from_numpy(img).float()
 
@@ -161,8 +165,6 @@ class FastDVDnetDataset(Dataset):
             img = img.permute(2, 0, 1)
             img = img.mean(dim=0, keepdim=True)
 
-        img = img / 255.0  
-
         return img
 
     def __getitem__(self, idx):
@@ -170,12 +172,10 @@ class FastDVDnetDataset(Dataset):
 
         frames = [self._read_tif(p) for p in stack_paths]
         stack = torch.cat(frames, dim=0)  # [5,H,W]
-
-        # Valery's linear transform
-        # stack = linear_transform(stack, a, b) # / 9000
-
-        # Resampling, this way all sequences end up on the same noise distribution (if they have the same x (not the case here))
-        # stack = resample_poisson_sequence(stack, a) #Is 1.4 by default 
+        stack = self.make_divisible_by_4(stack)
+        
+        # Valery's linear transform / data_scale
+        stack = linear_transform(stack, a, b) / self.data_scale 
 
         # Random crop
         if self.patch_size is not None:

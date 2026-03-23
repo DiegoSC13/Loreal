@@ -33,8 +33,9 @@ import tifffile
 import imageio.v3 as iio
 from pathlib import Path
 
-from model import FastDVDnet, SureWrapper
-from dataset import FastDVDnetDataset
+from new_model import FastDVDnet, SureWrapper
+from dataset import FastDVDnetDataset, get_valid_sequences
+from utils import *
 
 
 # ─────────────────────────────────────────────
@@ -42,14 +43,14 @@ from dataset import FastDVDnetDataset
 # ─────────────────────────────────────────────
 
 def read_tif(path: Path) -> torch.Tensor:
-    """Lee un .tif y devuelve tensor [1, H, W] normalizado en [0, 1]."""
+    """Lee un .tif y devuelve tensor [1, H, W] sin escalar."""
     img = iio.imread(str(path))
     img = torch.from_numpy(img.astype(np.float32))
     if img.ndim == 2:
         img = img.unsqueeze(0)
     elif img.ndim == 3:
         img = img.permute(2, 0, 1).mean(dim=0, keepdim=True)
-    img = img / 255.0
+
     return img
 
 
@@ -107,19 +108,6 @@ def iter_sequences(base_dir: Path):
             frames = sorted(f for f in tif_files if ch in f.name) if ch else tif_files
             if len(frames) < 5:
                 print(f"  [skip] {seq.name} canal '{ch or 'single'}': solo {len(frames)} frames")
-                continue
-
-            for i in range(2, len(frames) - 2):
-                stack_paths = [
-                    frames[i - 2],
-                    frames[i - 1],
-                    frames[i],       # frame central
-                    frames[i + 1],
-                    frames[i + 2],
-                ]
-                yield seq.name, ch, stack_paths
-
-
 # ─────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────
@@ -128,40 +116,56 @@ def main():
     parser = argparse.ArgumentParser(description="Inferencia FastDVDnet → .tif denoised")
     parser.add_argument("--ckpt",        type=str, required=True,
                         help="Ruta al checkpoint .pth")
-    parser.add_argument("--base_dir",    type=str, required=True,
-                        help="Directorio raíz con subdirectorios de secuencias")
+    parser.add_argument("--base_dir",    type=str, default=None,
+                        help="Directorio raíz con subdirectorios de secuencias (opcional si se usa --test_sequences)")
     parser.add_argument("--output_path", type=str, default="./test_results",
                         help="Directorio donde se guardan los .tif denoised")
     parser.add_argument("--patch_size",  type=int, nargs=2, default=None,
                         help="Crop central para inferencia, ej: --patch_size 256 256")
+    parser.add_argument("--data_scale",  type=float, default=9000.0,
+                        help="Factor divisor para los datos tras la transformacion lineal (a,b)")
+    parser.add_argument("--test_sequences", type=str, default=None,
+                        help="Ruta al test_sequences.txt generado durante el entrenamiento")
     parser.add_argument("--test_indexes", type=str, default=None,
-                        help="Ruta al test_indices.txt generado durante el entrenamiento")
+                        help="Ruta al test_indices.txt (deprectated, usar --test_sequences)")
     args = parser.parse_args()
 
     device   = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    base_dir = Path(args.base_dir)
     out_root = Path(args.output_path)
     out_root.mkdir(parents=True, exist_ok=True)
     patch_size = tuple(args.patch_size) if args.patch_size else None
 
     print(f"Device:   {device}")
-    print(f"Base dir: {base_dir}")
     print(f"Salida:   {out_root}\n")
 
     wrapper = load_model(args.ckpt, device)
 
+    # Lógica de obtención de secuencias
+    if args.test_sequences:
+        print(f"Cargando secuencias desde: {args.test_sequences}")
+        with open(args.test_sequences, "r") as f:
+            seq_paths = [line.strip() for line in f if line.strip()]
+        sequence_info = get_valid_sequences(seq_paths, out_file=out_root / "sequences_left_out_test.txt")
+    elif args.base_dir:
+        print(f"Buscando secuencias en: {args.base_dir}")
+        base_path = Path(args.base_dir)
+        seq_paths = [str(p) for p in base_path.iterdir() if p.is_dir()]
+        sequence_info = get_valid_sequences(seq_paths, out_file=out_root / "sequences_left_out_test.txt")
+    else:
+        raise ValueError("Debe proporcionar --base_dir o --test_sequences")
+
     # Instanciar dataset igual que en train (sin patch_size, queremos frames completos)
-    dataset = FastDVDnetDataset(base_dirs=[args.base_dir], patch_size=None)
+    dataset = FastDVDnetDataset(sequence_info=sequence_info, patch_size=None)
     print(f"Stacks totales en dataset: {len(dataset.stacks)}")
  
-    # Filtrar por índices de test si se proporcionan
+    # Filtrar por índices de test si se proporcionan (por compatibilidad)
     if args.test_indexes:
         indices = np.loadtxt(args.test_indexes, dtype=int)
         stacks_to_process = [dataset.stacks[i] for i in indices]
-        print(f"Procesando {len(stacks_to_process)} stacks del conjunto de test\n")
+        print(f"Procesando {len(stacks_to_process)} stacks filtrados por índices\n")
     else:
         stacks_to_process = dataset.stacks
-        print(f"Procesando todos los {len(stacks_to_process)} stacks (no se especificó test_indexes)\n")
+        print(f"Procesando todos los {len(stacks_to_process)} stacks disponibles\n")
  
     n_saved = 0
  
@@ -175,6 +179,16 @@ def main():
             # Leer stack
             frames = [read_tif(p) for p in stack_paths]
             stack  = torch.cat(frames, dim=0)          # [5, H, W]
+            
+            # Aplicar linear_transform / data_scale
+            stack = linear_transform(stack, a, b) / args.data_scale
+            
+            # Asegurar que las dimensiones sean múltiplos de 4 (como en test.py original)
+            H, W = stack.shape[1], stack.shape[2]
+            H_new = 4 * (H // 4)
+            W_new = 4 * (W // 4)
+            if H != H_new or W != W_new:
+                stack = stack[:, :H_new, :W_new]
 
             # Crop central (reproducible en test, no aleatorio)
             if patch_size is not None:
@@ -191,12 +205,12 @@ def main():
             output = wrapper(y_central)                # [1, 1, H, W]
 
             # Guardar como .tif uint16 en escala original [0, 255]
-            denoised_np = output[0, 0].cpu().numpy()
-            denoised_uint16 = (denoised_np * 255.0).clip(0, 65535).astype(np.uint16)
+            output = linear_transform(output * args.data_scale, a, b, inverse=True)
+            output = output.detach().cpu().numpy().squeeze()
 
             stem = stack_paths[2].stem  # nombre del frame central sin extensión
             out_path = seq_out_dir / f"{stem}_denoised.tif"
-            tifffile.imwrite(str(out_path), denoised_uint16)
+            tifffile.imwrite(str(out_path), output)
             n_saved += 1
 
         print(f"Guardados {n_saved} frames denoised en {out_root}")

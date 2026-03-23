@@ -11,8 +11,9 @@ def crop_like(src, tgt):
     w = min(w, src_w)
     return src[:, :, :h, :w].contiguous()
 
-def match_size(src, tgt):
-    return F.interpolate(src, size=tgt.shape[2:], mode='bilinear', align_corners=False)
+# No quiero usar match_size. Esto debería hacerse (y a partir de ahora se va a hacer) en dataset.py
+# def match_size(src, tgt):
+#     return F.interpolate(src, size=tgt.shape[2:], mode='bilinear', align_corners=False)
 
 def debug_gradients(tensors_dict):
     """
@@ -127,55 +128,18 @@ class DenBlock(nn.Module):
 		for _, m in enumerate(self.modules()):
 			self.weight_init(m)
 
-	# def forward(self, x):
 	def forward(self, in0, in1, in2):
 		# in0, in1, in2 = x[:,0:1,...], x[:,1:2,...], x[:,2:3,...]
-		# Input convolution block
-		x0 = self.inc(torch.cat((in0, in1, in2), dim=1))
-		# Downsampling
+		x0 = self.inc(torch.cat((in0, in1, in2), dim=1)) #Check Valery's model, I change something here
 		x1 = self.downc0(x0)
 		x2 = self.downc1(x1)
-		# Upsampling
 		x2 = self.upc2(x2)
-		x1 = self.upc1(match_size(x1, x2) + x2)
-		# Estimation
-		x = self.outc(match_size(x0, x1) + x1)
-
-		# Residual: resize noise estimate to input size and subtract
-		x = in1 - match_size(x, in1)
+		x1 = self.upc1(x1 + x2)
+		x0 = self.outc(x0 + x1)
+		x = in1 - x0 #Según Antigravity acá iría una ReLU para no sacar valores negativos, por ahora lo dejo como lo tiene Valery
 
 		return x
-		# in0, in1, in2 = x[:,0:1,...], x[:,1:2,...], x[:,2:3,...]
-		# x0 = self.inc(torch.cat((in0, in1, in2), dim=1)) #Check Valery's model, I change something here
 
-		# # Debug: después de input block
-		# # debug_gradients({
-		# # 	"in0": in0, "in1": in1, "in2": in2,
-		# # 	"x0": x0
-		# # })
-
-		# x1 = self.downc0(x0)
-		# x2 = self.downc1(x1)
-
-		# # debug_gradients({
-		# # 	"x1": x1,
-		# # 	"x2": x2
-		# # })
-
-		# x2 = self.upc2(x2)
-		# x1 = self.upc1(match_size(x1, x2) + x2)
-
-		# # debug_gradients({
-		# # 	"x2 (after upc2)": x2,
-		# # 	"x1 (after upc1 + skip)": x1
-		# # })
-
-		# x0 = self.outc(match_size(x0, x1) + x1)
-        
-		# # DeepInv SURE Poisson expects strictly positive predictions. We use ReLU + small eps.
-		# x = torch.relu(match_size(in1, x0) - x0) + 1e-6
-
-		# return x
 
 class FastDVDnet(nn.Module):
 	""" Definition of the FastDVDnet model.
@@ -206,60 +170,16 @@ class FastDVDnet(nn.Module):
 		'''Args:
 			x: Tensor, [N, num_frames*1, H, W] in the [0., 1.] range
 		'''
-		N, C, H, W = x.shape
-		if C < self.num_input_frames:
-			# No hay suficientes frames, devolver el frame central o el input sin procesar
-			# Aquí simplemente devolvemos el frame central (o el único)
-			mid = C // 2
-			return x[:, mid:mid+1, :, :]
+		# N, C, H, W = x.shape
+		# if C < self.num_input_frames:
+		# 	# No hay suficientes frames, devolver el frame central o el input sin procesar
+		# 	# Aquí simplemente devolvemos el frame central (o el único)
+		# 	mid = C // 2
+		# 	return x[:, mid:mid+1, :, :]
 
-		# # Unpack inputs
-		# x0, x1, x2, x3, x4 = tuple(x[:, m:m+1, :, :] for m in range(self.num_input_frames))
-		# # print('Shape de x0 (Unpacking):', x0.shape)
-		# # print('Shape de x1 (Unpacking):', x1.shape)
-		# # print('Shape de x2 (Unpacking):', x2.shape)
-		# # print('Shape de x3 (Unpacking):', x3.shape)
-		# # print('Shape de x4 (Unpacking):', x4.shape)
-
-		# # Preparar los tensores concatenados y mostrar shapes antes de enviarlos a temp1
-		# x0_cat = torch.cat((x0, x1, x2), dim=1)
-		# x1_cat = torch.cat((x1, x2, x3), dim=1)
-		# x2_cat = torch.cat((x2, x3, x4), dim=1)
-
-		# # print('Shape de x0_cat (antes de temp1):', x0_cat.shape)
-		# # print('Shape de x1_cat (antes de temp1):', x1_cat.shape)
-		# # print('Shape de x2_cat (antes de temp1):', x2_cat.shape)
-
-		# # First stage
-		# x20 = self.temp1(x0_cat)
-		# x21 = self.temp1(x1_cat)
-		# x22 = self.temp1(x2_cat)
-
-		# # x20 = x20 / (x20.abs().mean() + 1e-6)
-		# # x21 = x21 / (x21.abs().mean() + 1e-6)
-		# # x22 = x22 / (x22.abs().mean() + 1e-6)
-
-		# # Mostrar shapes después del primer stage
-		# # print('Shape de x20 (después de temp1):', x20.shape)
-		# # print('Shape de x21 (después de temp1):', x21.shape)
-		# # print('Shape de x22 (después de temp1):', x22.shape)
-
-		# # Segundo stage
-		# #EDIT: Pruebo combatir el desvanecimiento de gradiente mandando la señal original sumada a la salida de temp1
-		# #x_cat_stage2 = torch.cat((x20 + x1, x21 + x2, x22 + x3), dim=1)
-		# x_cat_stage2 = torch.cat((
-		# 	match_size(x20, x1) + x1,
-		# 	match_size(x21, x2) + x2,
-		# 	match_size(x22, x3) + x3
-		# ), dim=1)
-		# x = self.temp2(x_cat_stage2)
-		# # x_cat_stage2 = torch.cat((x20, x21, x22), dim=1)
-		# # # print('Shape concatenada para temp2:', x_cat_stage2.shape)
-		# # x = self.temp2(x_cat_stage2)
-
-		# # print('Shape final de x (después de temp2):', x.shape)
-		(x0, x1, x2, x3, x4) = tuple(x[:, m:m+1, :, :] for m in range(self.num_input_frames))
-
+		# Unpack inputs
+		x0, x1, x2, x3, x4 = tuple(x[:, m:m+1, :, :] for m in range(self.num_input_frames))
+		# Preparar los tensores concatenados y mostrar shapes antes de enviarlos a temp1
 		# First stage
 		x20 = self.temp1(x0, x1, x2)
 		x21 = self.temp1(x1, x2, x3)
@@ -267,7 +187,25 @@ class FastDVDnet(nn.Module):
 
 		#Second stage
 		x = self.temp2(x20, x21, x22)
+
 		return x
+		# x0_cat = torch.cat((x0, x1, x2), dim=1)
+		# x1_cat = torch.cat((x1, x2, x3), dim=1)
+		# x2_cat = torch.cat((x2, x3, x4), dim=1)
+
+		# # First stage
+		# x20 = self.temp1(x0_cat)
+		# x21 = self.temp1(x1_cat)
+		# x22 = self.temp1(x2_cat)
+
+		# x_cat_stage2 = torch.cat((
+		# 	x20 + x1,
+		# 	x21 + x2,
+		# 	x22 + x3
+		# ), dim=1)
+		# x = self.temp2(x_cat_stage2)
+
+		# return x
 
 
 class SureWrapper(nn.Module):

@@ -15,9 +15,11 @@ import torch
 from torch.utils.data import DataLoader, random_split
 
 from dataset import LorealDataset, FastDVDnetDataset, get_valid_sequences
-from model import FastDVDnet, SureWrapper
+from new_model import FastDVDnet, SureWrapper
 from losses import get_loss
 from physics import get_physics
+from deepinv.loss.r2r import R2RLoss, R2RModel
+from utils import *
 
 # This allows for accelerated Tensor Core training; cryoDRGN uses it. I've never been able to use it, but I want to try it someday.
 # try:
@@ -54,6 +56,7 @@ parser.add_argument("--ckpt", type=str, default=None, help="Ruta a checkpoint pr
 parser.add_argument("--loss", type=str, choices=("sure", "pure", "pgure", "unsure", "unpgure", "r2r_g", "r2r_p"), required=True) # "noise2score",# "unsure")
 parser.add_argument("--sigma", type=float, default=None) #Gaussian std
 parser.add_argument("--gamma", type=float, default=None) #Poisson scalar factor
+parser.add_argument("--alpha", type=float, default=0.15) #R2R recorruption factor
 # parser.add_argument("--mc_iter", type=int, default=1) #Era para el estimador de Monte Carlo de la divergencia, pero no veo que lo usen en las losses SURE-based
 parser.add_argument("--step_size", type=float, default=(1e-5, 1e-5), help="Gradient step size") #UNSURE and PG-UNSURE 
 parser.add_argument("--momentum", type=float, default=(0.9, 0.9), help="Gradient momentum")    #UNSURE and PG-UNSURE 
@@ -68,6 +71,8 @@ parser.add_argument("--patch_size", type=int, nargs=2, default=None,
                     help="Tamaño del recorte aleatorio, ej: --patch_size 128 128")
 parser.add_argument("--transform", type=str, default=None,
                     help="Nombre de la transformación a aplicar (opcional)")
+parser.add_argument("--loss_scaler", type=float, default=1.0, help="Factor para escalar la pérdida antes del backward (para evitar vanishing gradients en escalas pequeñas)")
+parser.add_argument("--data_scale", type=float, default=9000.0, help="Factor divisor para los datos tras la transformacion lineal (a,b)")
 args = parser.parse_args()
 
 #Creo directorio con fechas para no sobreescribir
@@ -78,14 +83,9 @@ os.makedirs(save_path, exist_ok=True)
 log_path = os.path.join(args.output_path, f"log_{timestamp}.log")
 
 logger = logging.getLogger(__name__)
-logger.info(f"Python version: {platform.python_version()}")
-
-# Esto genera el comando completo tal como se ejecutó
-command_used = " ".join(sys.argv)
-
-command_used = shlex.join(sys.argv)
-#logger.info(args)
-logger.info(f"Command used: {command_used}")
+#logger.info(f"Python version: {platform.python_version()}")
+print(f"Python version: {platform.python_version()}")
+print(f"Command used: {shlex.join(sys.argv)}")
 
 # Set the global random seed and select device
 # torch.manual_seed(int(time.time())) # Para tener distinta semilla en cada entrenamiento
@@ -132,9 +132,9 @@ print(f"Train sequences: {len(train_info)}")
 print(f"Val sequences: {len(val_info)}")
 print(f"Test sequences: {len(test_info)}")
 
-train_dataset = FastDVDnetDataset(sequence_info=train_info, patch_size=patch_size)
-val_dataset = FastDVDnetDataset(sequence_info=val_info, patch_size=patch_size)
-test_dataset = FastDVDnetDataset(sequence_info=test_info, patch_size=patch_size)
+train_dataset = FastDVDnetDataset(sequence_info=train_info, patch_size=patch_size, data_scale=args.data_scale)
+val_dataset = FastDVDnetDataset(sequence_info=val_info, patch_size=patch_size, data_scale=args.data_scale)
+test_dataset = FastDVDnetDataset(sequence_info=test_info, patch_size=patch_size, data_scale=args.data_scale)
 
 print(f"Train dataset size (stacks): {len(train_dataset)}")
 print(f"Val dataset size (stacks): {len(val_dataset)}")
@@ -145,7 +145,15 @@ train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, num_wor
 val_dataloader   = DataLoader(val_dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=False)
 test_dataloader  = DataLoader(test_dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=False)
 
-# Guardar secuencias de test para referencia
+# Guardar secuencias para referencia
+with open(os.path.join(save_path, "train_sequences.txt"), "w") as f:
+    for s_info in train_info:
+        f.write(f"{s_info[0]}\n")
+
+with open(os.path.join(save_path, "val_sequences.txt"), "w") as f:
+    for s_info in val_info:
+        f.write(f"{s_info[0]}\n")
+
 with open(os.path.join(save_path, "test_sequences.txt"), "w") as f:
     for s_info in test_info:
         f.write(f"{s_info[0]}\n")
@@ -173,13 +181,18 @@ loss_fn = get_loss(
         device=device,
         sigma=args.sigma,
         gamma=args.gamma, 
+        alpha=args.alpha,
         # mc_iter=args.mc_iter
         step_size = args.step_size,  #UNSURE
         momentum  = args.momentum   #UNSURE
     )
 
+# Adapt model if using R2RLoss
+if isinstance(loss_fn, R2RLoss):
+    wrapper = loss_fn.adapt_model(wrapper)
+
 # choose optimizer and scheduler
-optimizer = torch.optim.Adam(wrapper.parameters(), lr=args.lr, weight_decay=1e-8)
+optimizer = torch.optim.Adam(wrapper.parameters(), lr=args.lr, weight_decay=1e-4)
 scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.scheduler_step_size, gamma=args.scheduler_gamma) #Quiero multiplicar el lr por 0.1 cada 50 epocas
 
 if args.ckpt:
@@ -201,12 +214,25 @@ for epoch in range(args.epochs):
         stack = stack.to(device)           # [B, 5, H, W]
         y_central = stack[:, 2:3, :, :]   # [B, 1, H, W]
 
-        wrapper.set_context(stack)         # detach interno, una sola vez
+        if isinstance(wrapper, R2RModel):
+            wrapper.model.set_context(stack)
+        else:
+            wrapper.set_context(stack)
+
         optimizer.zero_grad()
 
-        output = wrapper(y_central)        # forward
+        # R2RLoss requires physics and update_parameters=True during training
+        if isinstance(loss_fn, R2RLoss):
+            output = wrapper(y_central, physics, update_parameters=True)
+        else:
+            output = wrapper(y_central)
+
         loss = loss_fn(y_central, output, physics, wrapper).mean()
-        loss.backward()
+        (loss * args.loss_scaler).backward()
+        
+        # 1. Gradient Clipping: Vital para evitar que SURE dispare los gradientes
+        torch.nn.utils.clip_grad_norm_(wrapper.parameters(), max_norm=1.0)
+        
         optimizer.step()
 
         running_loss += loss.item()
@@ -227,8 +253,19 @@ for epoch in range(args.epochs):
         for i, (stack, target) in enumerate(val_dataloader):
             stack = stack.to(device)
             y_central = stack[:, 2:3, :, :]
-            wrapper.set_context(stack)
-            output = wrapper(y_central)
+            
+            if isinstance(wrapper, R2RModel):
+                wrapper.model.set_context(stack)
+            else:
+                wrapper.set_context(stack)
+
+            if isinstance(loss_fn, R2RLoss):
+                wrapper.training = True
+                output = wrapper(y_central, physics, update_parameters=True)
+                wrapper.training = False
+            else:
+                output = wrapper(y_central)
+
             loss = loss_fn(y_central, output, physics, wrapper).mean()
             val_loss += loss.item()
     

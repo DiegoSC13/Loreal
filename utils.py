@@ -46,6 +46,14 @@ def resample_poisson_sequence(y, gamma, gamma_target=1.4, seed=None):
 
     return torch.from_numpy(y_norm).to(torch.float32)
 
+def linear_transform(data, a, b, u=1.4, v=0, inverse=False):
+    alpha =  u/a
+    beta  = (u*b/a - a*v/u) / a
+
+    if inverse:
+        return (data-beta) / alpha
+    return alpha*data+beta
+
 class RandomD4:
     """
     Aplica una transformación del grupo D4 (rotaciones 90 + flips)

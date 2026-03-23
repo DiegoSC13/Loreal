@@ -8,6 +8,7 @@ def get_loss(loss_name,
              device,
              sigma=None,
              gamma=None,
+             alpha=0.15,
              step_size = (1e-4, 1e-4),  #UNSURE y PGUSRE
              momentum  = (0.9, 0.9),   #UNSURE y PGURE
              #mc_iter=1,    
@@ -93,8 +94,8 @@ def get_loss(loss_name,
             raise ValueError("sigma must be provided for r2r_gaussian")
 
         loss_fn = R2RLoss(
-            noise_model="gaussian",
-            sigma=sigma,
+            noise_model=deepinv.physics.GaussianNoise(sigma=sigma),
+            alpha=alpha,
             **kwargs
         )
 
@@ -103,8 +104,8 @@ def get_loss(loss_name,
             raise ValueError("alpha must be provided for r2r_poisson")
 
         loss_fn = R2RLoss(
-            noise_model="poisson",
-            #gamma=gamma, Parece que el gamma va para physics, acá no lo necesito
+            noise_model=deepinv.physics.PoissonNoise(gain=gamma),
+            alpha=alpha,
             **kwargs
         )
 
