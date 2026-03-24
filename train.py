@@ -49,8 +49,8 @@ def check_checkpoint_loading_with_magnitude(model, ckpt):
         print(f"{name:50s} | {status:50s} | mean(abs)={mag:.6f}")
 
 parser = ArgumentParser()
-parser.add_argument("--image_paths", type=str, nargs='+', required=True,
-                    help="Lista de rutas a las imágenes .tif")
+parser.add_argument("--sequence_directory", type=str, required=True,
+                    help="Ruta al directorio que contiene las secuencias de imágenes (.tif)")
 parser.add_argument("--output_path", type=str, required=True, help="Directorio donde se crea carpeta de checkpoints")
 parser.add_argument("--ckpt", type=str, default=None, help="Ruta a checkpoint preentrenado") # Pretrained model path
 parser.add_argument("--loss", type=str, choices=("sure", "pure", "pgure", "unsure", "unpgure", "r2r_g", "r2r_p"), required=True) # "noise2score",# "unsure")
@@ -102,7 +102,7 @@ batch_size = args.batch_size if torch.cuda.is_available() else 1
 # Dataset preparation
 patch_size = tuple(args.patch_size) if args.patch_size else None
 
-root_dir = '/mnt/bdisk/dewil/loreal_POC2/sequences_almost_Poisson'
+root_dir = args.sequence_directory
 all_sequences_paths = []
 for root, dirs, files in os.walk(root_dir, followlinks=True):
     # excluir check del recorrido
@@ -190,6 +190,10 @@ loss_fn = get_loss(
 # Adapt model if using R2RLoss
 if isinstance(loss_fn, R2RLoss):
     wrapper = loss_fn.adapt_model(wrapper)
+    if args.loss == "r2r_p" and args.gamma is not None:
+        print(f"\n> [R2R Poisson] Gamma (gain) configurada: {args.gamma}")
+        print(f"> [R2R Poisson] Data scale (divisor): {args.data_scale}")
+        print(f"> [R2R Poisson] IMPORTANTE: DeepInverse usará la gamma proporcionada sobre los datos ya escalados.\n")
 
 # choose optimizer and scheduler
 optimizer = torch.optim.Adam(wrapper.parameters(), lr=args.lr, weight_decay=1e-4)
@@ -260,6 +264,10 @@ for epoch in range(args.epochs):
                 wrapper.set_context(stack)
 
             if isinstance(loss_fn, R2RLoss):
+                # Para calcular la loss R2R en validación, necesitamos generar una re-corrupción (y1).
+                # R2RModel (wrapper) solo lo hace si .training es True y se pasa update_parameters=True.
+                # Forzamos training=True en el wrapper para el forward, pero el modelo interno (FastDVDnet) 
+                # sigue en eval() si no se llamó a .train() recursivamente.
                 wrapper.training = True
                 output = wrapper(y_central, physics, update_parameters=True)
                 wrapper.training = False
@@ -275,6 +283,11 @@ for epoch in range(args.epochs):
     epoch_loss = running_loss / len(train_dataloader)
     epoch_losses.append(epoch_loss)
     scheduler.step()    
+    
+    # Save current loss history to a file so it can be resumed or analyzed
+    np.save(os.path.join(save_path, "train_losses.npy"), np.array(epoch_losses))
+    np.save(os.path.join(save_path, "val_losses.npy"), np.array(val_losses))
+    
     for name, avg_grad in grad_accum.items():
         print(f"{name} | grad_mean_epoch={avg_grad / n_batches:.2e}")
     print(
@@ -300,11 +313,18 @@ plt.plot(epoch_losses, label="Train Loss")
 plt.plot(val_losses, label="Val Loss")
 plt.xlabel("Epoch")
 plt.ylabel("Loss")
+plt.yscale('log') # Use log scale because first epochs have very high loss
 plt.legend()
-plt.title("Training vs Validation Loss")
-plt.grid(True)
+plt.title("Training vs Validation Loss (Log Scale)")
+plt.grid(True, which="both", ls="-", alpha=0.5)
 plt.show()
 plt.savefig(os.path.join(save_path, "loss_plot.png"), dpi=200)
+
+# Also save as a text file for easy reading
+with open(os.path.join(save_path, "losses.txt"), "w") as f:
+    f.write("Epoch, TrainLoss, ValLoss\n")
+    for i, (tl, vl) in enumerate(zip(epoch_losses, val_losses)):
+        f.write(f"{i+1}, {tl:.8f}, {vl:.8f}\n")
 
 ####################################################################
 

@@ -101,7 +101,7 @@ def get_loss(loss_name,
 
     elif loss_name == "r2r_p":
         if gamma is None:
-            raise ValueError("alpha must be provided for r2r_poisson")
+            raise ValueError("gamma must be provided for r2r_poisson")
 
         loss_fn = R2RLoss(
             noise_model=deepinv.physics.PoissonNoise(gain=gamma),
