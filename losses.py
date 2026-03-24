@@ -109,6 +109,16 @@ def get_loss(loss_name,
             **kwargs
         )
 
+    elif loss_name == "r2r_pg":
+        if sigma is None or gamma is None:
+            raise ValueError("sigma and gamma must be provided for r2r_pg")
+
+        loss_fn = R2RLoss(
+            noise_model=deepinv.physics.PoissonGaussianNoise(sigma=sigma, gain=gamma),
+            alpha=alpha,
+            **kwargs
+        )
+
     else:
         raise ValueError(f"Unknown loss: {loss_name}")
 
