@@ -288,8 +288,8 @@ for epoch in range(args.epochs):
     np.save(os.path.join(save_path, "train_losses.npy"), np.array(epoch_losses))
     np.save(os.path.join(save_path, "val_losses.npy"), np.array(val_losses))
     
-    for name, avg_grad in grad_accum.items():
-        print(f"{name} | grad_mean_epoch={avg_grad / n_batches:.2e}")
+    # for name, avg_grad in grad_accum.items():
+       # print(f"{name} | grad_mean_epoch={avg_grad / n_batches:.2e}")
     print(
     f"Epoch {epoch+1}, "
     f"Loss: {epoch_loss:.8f}, Val Loss: {avg_val_loss:.8f}, "

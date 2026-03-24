@@ -136,8 +136,7 @@ class DenBlock(nn.Module):
 		x2 = self.upc2(x2)
 		x1 = self.upc1(x1 + x2)
 		x0 = self.outc(x0 + x1)
-		x = in1 - x0 #Según Antigravity acá iría una ReLU para no sacar valores negativos, por ahora lo dejo como lo tiene Valery
-
+		x = torch.clamp(in1 - x0, min=0.0)
 		return x
 
 
