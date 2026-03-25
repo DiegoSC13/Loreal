@@ -59,8 +59,8 @@ parser.add_argument("--gamma", type=float, default=None) #Poisson scalar factor
 parser.add_argument("--tau", type=float, default=1.0, help="Perturbación para SURE/PURE en escala original") 
 parser.add_argument("--alpha", type=float, default=0.15) #R2R recorruption factor
 # parser.add_argument("--mc_iter", type=int, default=1) #Era para el estimador de Monte Carlo de la divergencia, pero no veo que lo usen en las losses SURE-based
-parser.add_argument("--step_size", type=float, default=(1e-5, 1e-5), help="Gradient step size") #UNSURE and PG-UNSURE 
-parser.add_argument("--momentum", type=float, default=(0.9, 0.9), help="Gradient momentum")    #UNSURE and PG-UNSURE 
+parser.add_argument("--step_size", type=float, nargs=2, default=(1e-5, 1e-5), help="Gradient step size") #UNSURE and PG-UNSURE 
+parser.add_argument("--momentum", type=float, nargs=2, default=(0.9, 0.9), help="Gradient momentum")    #UNSURE and PG-UNSURE 
 
 parser.add_argument("--batch_size", type=int, default=32) #Default of SSIBench is 32, not sure if it's the best option here
 parser.add_argument("--epochs", type=int, default=50)
