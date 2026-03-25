@@ -56,6 +56,7 @@ parser.add_argument("--ckpt", type=str, default=None, help="Ruta a checkpoint pr
 parser.add_argument("--loss", type=str, choices=("sure", "pure", "pgure", "unsure", "unpgure", "r2r_g", "r2r_p"), required=True) # "noise2score",# "unsure")
 parser.add_argument("--sigma", type=float, default=None) #Gaussian std
 parser.add_argument("--gamma", type=float, default=None) #Poisson scalar factor
+parser.add_argument("--tau", type=float, default=1.0, help="Perturbación para SURE/PURE en escala original") 
 parser.add_argument("--alpha", type=float, default=0.15) #R2R recorruption factor
 # parser.add_argument("--mc_iter", type=int, default=1) #Era para el estimador de Monte Carlo de la divergencia, pero no veo que lo usen en las losses SURE-based
 parser.add_argument("--step_size", type=float, default=(1e-5, 1e-5), help="Gradient step size") #UNSURE and PG-UNSURE 
@@ -74,6 +75,20 @@ parser.add_argument("--transform", type=str, default=None,
 parser.add_argument("--loss_scaler", type=float, default=1.0, help="Factor para escalar la pérdida antes del backward (para evitar vanishing gradients en escalas pequeñas)")
 parser.add_argument("--data_scale", type=float, default=9000.0, help="Factor divisor para los datos tras la transformacion lineal (a,b)")
 args = parser.parse_args()
+
+# --- Adaptación de parámetros a la escala [0, 1] ---
+# Si los datos se dividen por data_scale, los parámetros de ruido deben escalarse proporcionalmente
+sigma_scaled = args.sigma / args.data_scale if args.sigma is not None else None
+gamma_scaled = args.gamma / args.data_scale if args.gamma is not None else None
+tau_scaled   = args.tau / args.data_scale
+
+print(f"\n--- Configuración de Escala (Data Scale: {args.data_scale}) ---")
+if sigma_scaled is not None:
+    print(f"  Sigma: {args.sigma} (Original) -> {sigma_scaled:.6f} (Escalado)")
+if gamma_scaled is not None:
+    print(f"  Gamma: {args.gamma} (Original) -> {gamma_scaled:.6f} (Escalado)")
+print(f"  Tau:   {args.tau} (Original) -> {tau_scaled:.6f} (Escalado)")
+print("---------------------------------------------------\n")
 
 #Creo directorio con fechas para no sobreescribir
 timestamp = datetime.now().strftime("%y-%m-%d_%H-%M-%S")
@@ -171,16 +186,17 @@ wrapper = SureWrapper(model).to(device)
 # Choose physics
 physics = get_physics(
     loss_name=args.loss,
-    sigma=args.sigma,
-    gamma=args.gamma,
+    sigma=sigma_scaled,
+    gamma=gamma_scaled,
     device=device
 )
 # Choose loss 
 loss_fn = get_loss(
         loss_name=args.loss,
         device=device,
-        sigma=args.sigma,
-        gamma=args.gamma, 
+        sigma=sigma_scaled,
+        gamma=gamma_scaled, 
+        tau=tau_scaled,
         alpha=args.alpha,
         # mc_iter=args.mc_iter
         step_size = args.step_size,  #UNSURE
@@ -190,10 +206,10 @@ loss_fn = get_loss(
 # Adapt model if using R2RLoss
 if isinstance(loss_fn, R2RLoss):
     wrapper = loss_fn.adapt_model(wrapper)
-    if args.loss == "r2r_p" and args.gamma is not None:
-        print(f"\n> [R2R Poisson] Gamma (gain) configurada: {args.gamma}")
+    if args.loss == "r2r_p" and gamma_scaled is not None:
+        print(f"\n> [R2R Poisson] Gamma (gain) configurada (escalada): {gamma_scaled}")
         print(f"> [R2R Poisson] Data scale (divisor): {args.data_scale}")
-        print(f"> [R2R Poisson] IMPORTANTE: DeepInverse usará la gamma proporcionada sobre los datos ya escalados.\n")
+        print(f"> [R2R Poisson] IMPORTANTE: La ganancia ha sido adaptada a la escala [0, 1] usada por el modelo.\n")
 
 # choose optimizer and scheduler
 optimizer = torch.optim.Adam(wrapper.parameters(), lr=args.lr, weight_decay=1e-4)
