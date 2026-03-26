@@ -33,7 +33,7 @@ import tifffile
 import imageio.v3 as iio
 from pathlib import Path
 
-from new_model import FastDVDnet, SureWrapper
+from new_model import FastDVDnet_, SureWrapper
 from dataset import FastDVDnetDataset, get_valid_sequences
 from utils import *
 
@@ -56,7 +56,7 @@ def read_tif(path: Path) -> torch.Tensor:
 
 def load_model(ckpt_path: str, device: torch.device) -> SureWrapper:
     """Carga FastDVDnet + SureWrapper desde checkpoint."""
-    model = FastDVDnet(num_input_frames=5).to(device)
+    model = FastDVDnet_(num_input_frames=5).to(device)
     wrapper = SureWrapper(model).to(device)
 
     ckpt = torch.load(ckpt_path, map_location=device)
