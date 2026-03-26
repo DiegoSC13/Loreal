@@ -15,11 +15,14 @@ import torch
 from torch.utils.data import DataLoader, random_split
 
 from dataset import LorealDataset, FastDVDnetDataset, get_valid_sequences
-from new_model import FastDVDnet, SureWrapper
+from new_model import FastDVDnet_, SureWrapper
 from losses import get_loss
 from physics import get_physics
 from deepinv.loss.r2r import R2RLoss, R2RModel
 from utils import *
+
+sys.path.append("/mnt/bdisk/dewil/loreal_POC2/sequences_for_self-supervised_tests/FastDVDnet_codes")
+from models_FastDVDnet_sans_noise_map import FastDVDnet
 
 # This allows for accelerated Tensor Core training; cryoDRGN uses it. I've never been able to use it, but I want to try it someday.
 # try:
@@ -77,8 +80,11 @@ parser.add_argument("--loss_scaler", type=float, default=1.0, help="Factor para 
 parser.add_argument("--data_scale", type=float, default=9000.0, help="Factor divisor para los datos tras la transformacion lineal (a,b)")
 args = parser.parse_args()
 
-# --- Adaptación de parámetros a la escala [0, 1] ---
-# Si los datos se dividen por data_scale, los parámetros de ruido deben escalarse proporcionalmente
+#Seed
+seed=43
+
+# --- Escalado de hiperparámetros ---
+# Si los datos se dividen por data_scale, los hiperparámetros de ruido deben escalarse proporcionalmente
 sigma_scaled = args.sigma / args.data_scale if args.sigma is not None else None
 gamma_scaled = args.gamma / args.data_scale if args.gamma is not None else None
 tau1_scaled   = args.tau1 / args.data_scale 
@@ -107,7 +113,7 @@ print(f"Command used: {shlex.join(sys.argv)}")
 
 # Set the global random seed and select device
 # torch.manual_seed(int(time.time())) # Para tener distinta semilla en cada entrenamiento
-generator = torch.Generator().manual_seed(42) # Para tener reproducibilidad
+generator = torch.Generator().manual_seed(seed) # Para tener reproducibilidad
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 #Checkpoints dir
@@ -133,35 +139,36 @@ for root, dirs, files in os.walk(root_dir, followlinks=True):
 valid_sequences_info = get_valid_sequences(all_sequences_paths, out_file=os.path.join(save_path, "sequences_left_out.txt"))
 
 # Shuffle and split sequences
-random.seed(42)
+random.seed(seed)
 random.shuffle(valid_sequences_info)
 
 n_total = len(valid_sequences_info)
-n_train = int(0.7 * n_total)
-n_val = int(0.15 * n_total)
-n_test = n_total - n_train - n_val
+n_train = int(0.8 * n_total)
+n_val = n_total - n_train
+#n_val = int(0.2 * n_total)
+#n_test = n_total - n_train - n_val
 
 train_info = valid_sequences_info[:n_train]
-val_info = valid_sequences_info[n_train:n_train + n_val]
-test_info = valid_sequences_info[n_train + n_val:]
+val_info = valid_sequences_info[n_train:]#n_train + n_val]
+#test_info = valid_sequences_info[n_train + n_val:]
 
 print(f"Total valid sequences: {n_total}")
 print(f"Train sequences: {len(train_info)}")
 print(f"Val sequences: {len(val_info)}")
-print(f"Test sequences: {len(test_info)}")
+#print(f"Test sequences: {len(test_info)}")
 
 train_dataset = FastDVDnetDataset(sequence_info=train_info, patch_size=patch_size, data_scale=args.data_scale)
 val_dataset = FastDVDnetDataset(sequence_info=val_info, patch_size=patch_size, data_scale=args.data_scale)
-test_dataset = FastDVDnetDataset(sequence_info=test_info, patch_size=patch_size, data_scale=args.data_scale)
+#test_dataset = FastDVDnetDataset(sequence_info=test_info, patch_size=patch_size, data_scale=args.data_scale)
 
 print(f"Train dataset size (stacks): {len(train_dataset)}")
 print(f"Val dataset size (stacks): {len(val_dataset)}")
-print(f"Test dataset size (stacks): {len(test_dataset)}")
+#print(f"Test dataset size (stacks): {len(test_dataset)}")
 
 # Dataloader preparation
 train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True)
 val_dataloader   = DataLoader(val_dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=False)
-test_dataloader  = DataLoader(test_dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=False)
+# test_dataloader  = DataLoader(test_dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=False)
 
 # Guardar secuencias para referencia
 with open(os.path.join(save_path, "train_sequences.txt"), "w") as f:
@@ -172,9 +179,9 @@ with open(os.path.join(save_path, "val_sequences.txt"), "w") as f:
     for s_info in val_info:
         f.write(f"{s_info[0]}\n")
 
-with open(os.path.join(save_path, "test_sequences.txt"), "w") as f:
-    for s_info in test_info:
-        f.write(f"{s_info[0]}\n")
+# with open(os.path.join(save_path, "test_sequences.txt"), "w") as f:
+#     for s_info in test_info:
+#         f.write(f"{s_info[0]}\n")
 
 for x, target in train_dataloader:
     print("x shape after dataloader:", x.shape)
@@ -183,7 +190,7 @@ for x, target in train_dataloader:
 
 # Choose model
 model = FastDVDnet(num_input_frames=5).to(device)
-# Wrapper que adapta FastDVDnet (5 frames → 1 frame) a la interfaz que espera SurePoissonLoss
+# Wrapper que adapta FastDVDnet (5 frames → 1 frame) a la interfaz que esperan las losses de DeepInverse
 wrapper = SureWrapper(model).to(device)
 
 # Choose physics
@@ -207,7 +214,7 @@ loss_fn = get_loss(
         momentum  = args.momentum   #UNSURE
     )
 
-# Adapt model if using R2RLoss
+# Adapt model if using R2RLoss, neccesary for R2R
 if isinstance(loss_fn, R2RLoss):
     wrapper = loss_fn.adapt_model(wrapper)
     if args.loss == "r2r_p" and gamma_scaled is not None:

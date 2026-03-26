@@ -136,11 +136,12 @@ class DenBlock(nn.Module):
 		x2 = self.upc2(x2)
 		x1 = self.upc1(x1 + x2)
 		x0 = self.outc(x0 + x1)
-		x = torch.clamp(in1 - x0, min=0.0)
+		#x = torch.clamp(in1 - x0, min=0.0)
+		x = in1 - x0
 		return x
 
 
-class FastDVDnet(nn.Module):
+class FastDVDnet_(nn.Module):
 	""" Definition of the FastDVDnet model.
 	Inputs of forward():
 		xn: input frames of dim [N, C, H, W], (C=1 grayscale)
@@ -148,7 +149,7 @@ class FastDVDnet(nn.Module):
 	"""
 
 	def __init__(self, num_input_frames=5):
-		super(FastDVDnet, self).__init__()
+		super(FastDVDnet_, self).__init__()
 		self.num_input_frames = num_input_frames
 		# Define models of each denoising stage
 		self.temp1 = DenBlock(num_input_frames=3)
@@ -225,7 +226,7 @@ class SureWrapper(nn.Module):
         output = wrapper(y_central)         # equivalente a model(stack)
         loss = loss_fn(y_central, output, physics, wrapper)
     """
-    def __init__(self, model: FastDVDnet):
+    def __init__(self, model: FastDVDnet_):
         super().__init__()
         self.model = model
         self._context = None  # [B, 5, H, W], se actualiza cada batch

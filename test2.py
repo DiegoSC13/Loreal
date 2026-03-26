@@ -49,7 +49,7 @@ def read_tif(path: Path) -> torch.Tensor:
     if img.ndim == 2:
         img = img.unsqueeze(0)
     elif img.ndim == 3:
-        img = img.permute(2, 0, 1).mean(dim=0, keepdim=True)
+        img = img.permute(2, 0, 1)[:1, :, :]
 
     return img
 
