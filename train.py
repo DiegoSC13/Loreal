@@ -56,7 +56,8 @@ parser.add_argument("--ckpt", type=str, default=None, help="Ruta a checkpoint pr
 parser.add_argument("--loss", type=str, choices=("sure", "pure", "pgure", "unsure", "unpgure", "r2r_g", "r2r_p"), required=True) # "noise2score",# "unsure")
 parser.add_argument("--sigma", type=float, default=None) #Gaussian std
 parser.add_argument("--gamma", type=float, default=None) #Poisson scalar factor
-parser.add_argument("--tau", type=float, default=1.0, help="Perturbación para SURE/PURE en escala original") 
+parser.add_argument("--tau1", type=float, default=1e-3, help="Approximation constant on Monte Carlo divergence estimation") #1e-3 default value for range [0,1] 
+parser.add_argument("--tau2", type=float, default=1e-2, help="Approximation constant for the second derivative") #1e-2 default value for range [0,1] 
 parser.add_argument("--alpha", type=float, default=0.15) #R2R recorruption factor
 # parser.add_argument("--mc_iter", type=int, default=1) #Era para el estimador de Monte Carlo de la divergencia, pero no veo que lo usen en las losses SURE-based
 parser.add_argument("--step_size", type=float, nargs=2, default=(1e-5, 1e-5), help="Gradient step size") #UNSURE and PG-UNSURE 
@@ -80,17 +81,19 @@ args = parser.parse_args()
 # Si los datos se dividen por data_scale, los parámetros de ruido deben escalarse proporcionalmente
 sigma_scaled = args.sigma / args.data_scale if args.sigma is not None else None
 gamma_scaled = args.gamma / args.data_scale if args.gamma is not None else None
-tau_scaled   = args.tau / args.data_scale
+tau1_scaled   = args.tau1 / args.data_scale 
+tau2_scaled   = args.tau2 / args.data_scale 
 
 print(f"\n--- Configuración de Escala (Data Scale: {args.data_scale}) ---")
 if sigma_scaled is not None:
     print(f"  Sigma: {args.sigma} (Original) -> {sigma_scaled:.6f} (Escalado)")
 if gamma_scaled is not None:
     print(f"  Gamma: {args.gamma} (Original) -> {gamma_scaled:.6f} (Escalado)")
-print(f"  Tau:   {args.tau} (Original) -> {tau_scaled:.6f} (Escalado)")
+print(f"  Tau1:   {args.tau1} (Original) -> {tau1_scaled:.6f} (Escalado)")
+print(f"  Tau2:   {args.tau2} (Original) -> {tau2_scaled:.6f} (Escalado)")
 print("---------------------------------------------------\n")
 
-#Creo directorio con fechas para no sobreescribir
+# Creo directorio con fechas para no sobreescribir
 timestamp = datetime.now().strftime("%y-%m-%d_%H-%M-%S")
 save_path = os.path.join(args.output_path, f"train_{timestamp}")
 os.makedirs(save_path, exist_ok=True)
@@ -196,7 +199,8 @@ loss_fn = get_loss(
         device=device,
         sigma=sigma_scaled,
         gamma=gamma_scaled, 
-        tau=tau_scaled,
+        tau1=tau1_scaled,
+        tau2=tau2_scaled,
         alpha=args.alpha,
         # mc_iter=args.mc_iter
         step_size = args.step_size,  #UNSURE

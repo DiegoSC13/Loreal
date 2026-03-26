@@ -8,7 +8,8 @@ def get_loss(loss_name,
              device,
              sigma=None,
              gamma=None,
-             tau=0.01,
+             tau1=1e-3,
+             tau2=1e-2,
              alpha=0.15,
              step_size = (1e-4, 1e-4),  #UNSURE y PGUSRE
              momentum  = (0.9, 0.9),   #UNSURE y PGURE
@@ -27,8 +28,10 @@ def get_loss(loss_name,
         Gaussian noise std (for SURE Gaussian).
     gamma : float, optional
         Poisson scaling parameter (gain).
-    tau : float, optional
+    tau1 : float, optional
         Perturbation size for Monte Carlo divergence estimation.
+    tau2 : float, optional
+        Approximation constant for the second derivative.
     alpha : float, optional
         R2R recorruption parameter.
     mc_iter : int
@@ -48,7 +51,7 @@ def get_loss(loss_name,
         loss_fn = SureGaussianLoss(
             sigma=sigma,
             #mc_iter=mc_iter,
-            tau=tau,
+            tau=tau1,
             **kwargs
         )
 
@@ -59,7 +62,7 @@ def get_loss(loss_name,
         loss_fn = SurePoissonLoss(
             gain=gamma,
             #mc_iter=mc_iter,
-            tau=tau,
+            tau=tau1,
             **kwargs
         )
 
@@ -71,7 +74,8 @@ def get_loss(loss_name,
             sigma=sigma,
             gain=gamma,
             #mc_iter=mc_iter,
-            tau=tau,
+            tau1=tau1,
+            tau2=tau2,
             **kwargs
         )
 
@@ -82,7 +86,7 @@ def get_loss(loss_name,
             unsure=True,
             step_size = step_size,
             momentum  = momentum,
-            tau=tau,
+            tau=tau1,
             **kwargs
         )
 
@@ -95,7 +99,8 @@ def get_loss(loss_name,
             unsure=True,
             step_size = step_size,
             momentum  = momentum,
-            tau=tau,
+            tau1=tau1,
+            tau2=tau2,
             **kwargs
         )
 
