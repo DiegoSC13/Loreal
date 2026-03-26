@@ -3,3 +3,4 @@ results/
 .DS_Store
 *.txt
 testing_utils.ipynb
+test_results/
