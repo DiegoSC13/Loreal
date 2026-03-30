@@ -85,10 +85,10 @@ seed=43
 
 # --- Escalado de hiperparámetros ---
 # Si los datos se dividen por data_scale, los hiperparámetros de ruido deben escalarse proporcionalmente
-sigma_scaled = args.sigma / args.data_scale if args.sigma is not None else None
-gamma_scaled = args.gamma / args.data_scale if args.gamma is not None else None
-tau1_scaled   = args.tau1 / args.data_scale 
-tau2_scaled   = args.tau2 / args.data_scale 
+sigma_scaled = 1.4 * args.sigma / args.data_scale if args.sigma is not None else None
+gamma_scaled = 1.4 * args.gamma / args.data_scale if args.gamma is not None else None
+tau1_scaled   = args.tau1 #/ args.data_scale 
+tau2_scaled   = args.tau2 #/ args.data_scale 
 
 print(f"\n--- Configuración de Escala (Data Scale: {args.data_scale}) ---")
 if sigma_scaled is not None:
