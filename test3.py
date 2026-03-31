@@ -41,7 +41,10 @@ def eval(**args):
     # model.cuda()
     ckpt = torch.load(args['network'], map_location=device)
     state_dict = ckpt.get("state_dict", ckpt)
-    model.load_state_dict(state_dict, strict=False)
+    # Create output directory if it doesn't exist
+    out_dir = os.path.dirname(args['output'])
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
        
     #Initialisation
     ut = iio.read(args['input'] % (args['first']))
