@@ -100,11 +100,19 @@ print(f"  Tau2:   {args.tau2} (Original) -> {tau2_scaled:.6f} (Escalado)")
 print("---------------------------------------------------\n")
 
 # Creo directorio con fechas para no sobreescribir
-timestamp = datetime.now().strftime("%y-%m-%d_%H-%M-%S")
-save_path = os.path.join(args.output_path, f"train_{timestamp}")
-os.makedirs(save_path, exist_ok=True)
+# timestamp = datetime.now().strftime("%y-%m-%d_%H-%M-%S")
+# save_path = os.path.join(args.output_path, f"train_{timestamp}")
+# os.makedirs(save_path, exist_ok=True)
+os.makedirs(args.output_path, exist_ok=True)
+save_path = args.output_path
 
-log_path = os.path.join(args.output_path, f"log_{timestamp}.log")
+log_path = os.path.join(args.output_path, f"logfile.log")
+
+# Subdirectorios para organizar resultados
+losses_dir = os.path.join(save_path, "losses")
+sequences_dir = os.path.join(save_path, "sequences")
+os.makedirs(losses_dir, exist_ok=True)
+os.makedirs(sequences_dir, exist_ok=True)
 
 logger = logging.getLogger(__name__)
 #logger.info(f"Python version: {platform.python_version()}")
@@ -136,7 +144,7 @@ for root, dirs, files in os.walk(root_dir, followlinks=True):
         all_sequences_paths.append(seq_path)
 
 # Filtrar secuencias válidas antes de dividir
-valid_sequences_info = get_valid_sequences(all_sequences_paths, out_file=os.path.join(save_path, "sequences_left_out.txt"))
+valid_sequences_info = get_valid_sequences(all_sequences_paths, out_file=os.path.join(sequences_dir, "sequences_left_out.txt"))
 
 # Shuffle and split sequences
 random.seed(seed)
@@ -149,7 +157,9 @@ n_val = n_total - n_train
 #n_test = n_total - n_train - n_val
 
 train_info = valid_sequences_info[:n_train]
+#train_info = sorted(train_info)
 val_info = valid_sequences_info[n_train:]#n_train + n_val]
+#val_info = sorted(val_info)
 #test_info = valid_sequences_info[n_train + n_val:]
 
 print(f"Total valid sequences: {n_total}")
@@ -171,11 +181,11 @@ val_dataloader   = DataLoader(val_dataset, batch_size=args.batch_size, num_worke
 # test_dataloader  = DataLoader(test_dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=False)
 
 # Guardar secuencias para referencia
-with open(os.path.join(save_path, "train_sequences.txt"), "w") as f:
+with open(os.path.join(sequences_dir, "train_sequences.txt"), "w") as f:
     for s_info in train_info:
         f.write(f"{s_info[0]}\n")
 
-with open(os.path.join(save_path, "val_sequences.txt"), "w") as f:
+with open(os.path.join(sequences_dir, "val_sequences.txt"), "w") as f:
     for s_info in val_info:
         f.write(f"{s_info[0]}\n")
 
@@ -230,11 +240,39 @@ if args.ckpt:
     ckpt = torch.load(args.ckpt, map_location=device)
     state_dict = ckpt.get("state_dict", ckpt)  # compatible con ambos formatos
     model.load_state_dict(state_dict, strict=False)
-    check_checkpoint_loading_with_magnitude(model, state_dict)
+    # check_checkpoint_loading_with_magnitude(model, state_dict)
     print("Loaded model weights (optimizer reinitialized).")
 
-epoch_losses = []
-val_losses = []
+# --- EVALUACIÓN EPOCH 0 (Punto de partida) ---
+print("Evaluating Epoch 0 (baseline)...")
+wrapper.eval()
+initial_loss = 0.0
+num_batches_eval = 0
+with torch.no_grad():
+    for i, (stack, target) in enumerate(train_dataloader):
+        if i >= 10: break  # Usamos 10 batches para una estimación rápida
+        stack = stack.to(device)
+        y_central = stack[:, 2:3, :, :]
+        
+        if isinstance(wrapper, R2RModel):
+            wrapper.model.set_context(stack)
+        else:
+            wrapper.set_context(stack)
+
+        if isinstance(loss_fn, R2RLoss):
+            output = wrapper(y_central, physics, update_parameters=False)
+        else:
+            output = wrapper(y_central)
+
+        loss = loss_fn(y_central, output, physics, wrapper).mean()
+        initial_loss += loss.item()
+        num_batches_eval += 1
+
+avg_init_loss = initial_loss / num_batches_eval
+print(f"Epoch 0 Loss: {avg_init_loss:.8f}\n")
+
+epoch_losses = [avg_init_loss]
+val_losses = [avg_init_loss]
 for epoch in range(args.epochs):
     wrapper.train()
     running_loss = 0.0
@@ -312,14 +350,14 @@ for epoch in range(args.epochs):
     scheduler.step()    
     
     # Save current loss history to a file so it can be resumed or analyzed
-    np.save(os.path.join(save_path, "train_losses.npy"), np.array(epoch_losses))
-    np.save(os.path.join(save_path, "val_losses.npy"), np.array(val_losses))
+    np.save(os.path.join(losses_dir, "train_losses.npy"), np.array(epoch_losses))
+    np.save(os.path.join(losses_dir, "val_losses.npy"), np.array(val_losses))
     
     # for name, avg_grad in grad_accum.items():
        # print(f"{name} | grad_mean_epoch={avg_grad / n_batches:.2e}")
     print(
     f"Epoch {epoch+1}, "
-    f"Loss: {epoch_loss:.8f}, Val Loss: {avg_val_loss:.8f}, "
+    f"Loss: {epoch_loss:.12f}, Val Loss: {avg_val_loss:.12f}, "
     f"lr: {optimizer.param_groups[0]['lr']:.2e}\n"
     )
     logger.info(f"Epoch {epoch+1}/{args.epochs} - Loss: {epoch_loss:.4f} - Val Loss: {avg_val_loss:.4f} - Learning Rate: {optimizer.param_groups[0]['lr']:.2e}")
@@ -345,13 +383,13 @@ plt.legend()
 plt.title("Training vs Validation Loss (Log Scale)")
 plt.grid(True, which="both", ls="-", alpha=0.5)
 plt.show()
-plt.savefig(os.path.join(save_path, "loss_plot.png"), dpi=200)
+plt.savefig(os.path.join(losses_dir, "loss_plot.png"), dpi=200)
 
 # Also save as a text file for easy reading
-with open(os.path.join(save_path, "losses.txt"), "w") as f:
+with open(os.path.join(losses_dir, "losses.txt"), "w") as f:
     f.write("Epoch, TrainLoss, ValLoss\n")
     for i, (tl, vl) in enumerate(zip(epoch_losses, val_losses)):
-        f.write(f"{i+1}, {tl:.8f}, {vl:.8f}\n")
+        f.write(f"{i}, {tl:.8f}, {vl:.8f}\n")
 
 ####################################################################
 
