@@ -5,3 +5,4 @@ results/
 testing_utils.ipynb
 test_results/
 *.png
+*.log
