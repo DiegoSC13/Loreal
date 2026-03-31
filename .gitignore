@@ -4,3 +4,4 @@ results/
 *.txt
 testing_utils.ipynb
 test_results/
+*.png
