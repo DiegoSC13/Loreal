@@ -95,7 +95,7 @@ def get_valid_sequences(sequence_paths, out_file="sequences_left_out.txt"):
                 valid_sequences.append((str(seq), float(a), float(b)))
             else:
                 f_out.write(f"{seq.name}, not enough frames (min 5)\n")
-    
+        valid_sequences = sorted(valid_sequences)
     return valid_sequences
 
 class FastDVDnetDataset(Dataset):
