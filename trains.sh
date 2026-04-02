@@ -40,7 +40,7 @@ for lr in "${LR_VALUES[@]}"; do
 
     LOGFILE="${OUTDIR}/train.log"
 
-    echo "Running experiment ${EXP_NAME}"
+    echo "Command: $PYTHON train.py --sequence_directory ${SEQUENCE_DIR} --output_path ${OUTDIR} --ckpt ${CKPT} --loss pure --gamma 1.0 --data_scale ${DATA_SCALE} --tau1 ${tau1} --batch_size 32 --epochs ${EPOCHS} --lr ${lr} --patch_size 256 256 --transform d4" > ${LOGFILE}
 
     $PYTHON train.py \
       --sequence_directory ${SEQUENCE_DIR} \
@@ -55,18 +55,21 @@ for lr in "${LR_VALUES[@]}"; do
       --lr ${lr} \
       --patch_size 256 256 \
       --transform d4 \
-      &> ${LOGFILE}
+      &>> ${LOGFILE}
 
     echo "Testing ${EXP_NAME}"
+    TEST_LOGFILE="${OUTDIR}/test.log"
+    echo "Command: $PYTHON test4.py --input ${INPUT_SEQ} --output ${OUTDIR}/last_epoch/test_output_%03d.tif --pre_processing_data ${PREPROC} --first 0 --last 29 --network ${NETWORK} --data_scale ${DATA_SCALE}" > ${TEST_LOGFILE}
 
-    $PYTHON test3.py \
+    $PYTHON test4.py \
       --input ${INPUT_SEQ} \
       --output ${OUTDIR}/last_epoch/test_output_%03d.tif \
       --pre_processing_data ${PREPROC} \
       --first 0 \
       --last 29 \
       --network ${NETWORK} \
-      --data_scale ${DATA_SCALE}
+      --data_scale ${DATA_SCALE} \
+      &>> ${TEST_LOGFILE}
 
   done
 done
