@@ -66,12 +66,14 @@ def eval(**args):
         inframes = [ut_moins_2, ut_moins_1, ut, ut_plus_1, ut_plus_2]
         stack = torch.stack(inframes, dim=0).contiguous().view((1, 5, H, W)).cuda()
 
-        stack = linear_transform(stack, a, b) / 9000 # The frames can be in the range [0,9000]. here, we just normalize them to the range [0,1]
+        stack = linear_transform(stack, a, b) / args['data_scale'] # The frames can be in the range [0,data_scale]. here, we just normalize them to the range [0,u] (default u=1.4)
+        stack = torch.clamp(stack, min=0.0)
 
         with torch.no_grad():
             out = model(stack)
 
-        out = linear_transform(out*9000, a, b, inverse=True) # before inversing the linear transform, we unnormalize them back to the big range [0,9000]
+        out = torch.clamp(out, min=0.0)
+        out = linear_transform(out*args['data_scale'], a, b, inverse=True) # before inversing the linear transform, we unnormalize them back to the big range [0,data_scale]
 
         out = out.detach().cpu().numpy().squeeze()
 
@@ -91,6 +93,7 @@ if __name__ == "__main__":
     parser.add_argument("--first"              , type=int, default=1            , help='index first frame'                                                           ) 
     parser.add_argument("--last"               , type=int, default=40           , help='index last frame'                                                            )
     parser.add_argument("--network"            , type=str, default="./model.pth", help='path to the network'                                                         )
+    parser.add_argument("--data_scale"         , type=float, default=9000.0     , help='factor divisor for data normalization'                                       )
 
     argspar = parser.parse_args()
 

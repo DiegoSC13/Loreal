@@ -86,7 +86,7 @@ seed=43
 # --- Escalado de hiperparámetros ---
 # Si los datos se dividen por data_scale, los hiperparámetros de ruido deben escalarse proporcionalmente
 sigma_scaled = 1.4 * args.sigma / args.data_scale if args.sigma is not None else None
-gamma_scaled = 1.4 * args.gamma / args.data_scale if args.gamma is not None else None
+gamma_scaled = args.gamma * args.data_scale / 1.4 if args.gamma is not None else None
 tau1_scaled   = args.tau1 #/ args.data_scale 
 tau2_scaled   = args.tau2 #/ args.data_scale 
 
@@ -167,8 +167,14 @@ print(f"Train sequences: {len(train_info)}")
 print(f"Val sequences: {len(val_info)}")
 #print(f"Test sequences: {len(test_info)}")
 
-train_dataset = FastDVDnetDataset(sequence_info=train_info, patch_size=patch_size, data_scale=args.data_scale)
-val_dataset = FastDVDnetDataset(sequence_info=val_info, patch_size=patch_size, data_scale=args.data_scale)
+# Transform preparation
+transform = None
+if args.transform == "d4":
+    transform = RandomD4()
+    print("Using D4 data augmentation.")
+
+train_dataset = FastDVDnetDataset(sequence_info=train_info, patch_size=patch_size, data_scale=args.data_scale, transform=transform)
+val_dataset   = FastDVDnetDataset(sequence_info=val_info, patch_size=patch_size, data_scale=args.data_scale)
 #test_dataset = FastDVDnetDataset(sequence_info=test_info, patch_size=patch_size, data_scale=args.data_scale)
 
 print(f"Train dataset size (stacks): {len(train_dataset)}")
@@ -242,6 +248,28 @@ if args.ckpt:
     model.load_state_dict(state_dict, strict=False)
     # check_checkpoint_loading_with_magnitude(model, state_dict)
     print("Loaded model weights (optimizer reinitialized).")
+
+class EarlyStopping:
+    def __init__(self, patience=20, min_delta=0):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.counter = 0
+        self.best_loss = None
+        self.early_stop = False
+
+    def __call__(self, val_loss):
+        if self.best_loss is None:
+            self.best_loss = val_loss
+        elif val_loss > self.best_loss - self.min_delta:
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_loss = val_loss
+            self.counter = 0
+
+early_stopping = EarlyStopping(patience=20)
+best_val_loss = float('inf')
 
 # --- EVALUACIÓN EPOCH 0 (Punto de partida) ---
 print("Evaluating Epoch 0 (baseline)...")
@@ -360,9 +388,8 @@ for epoch in range(args.epochs):
     f"Loss: {epoch_loss:.12f}, Val Loss: {avg_val_loss:.12f}, "
     f"lr: {optimizer.param_groups[0]['lr']:.2e}\n"
     )
-    logger.info(f"Epoch {epoch+1}/{args.epochs} - Loss: {epoch_loss:.4f} - Val Loss: {avg_val_loss:.4f} - Learning Rate: {optimizer.param_groups[0]['lr']:.2e}")
+    logger.info(f"Epoch {epoch+1}/{args.epochs} - Loss: {epoch_loss:.12f} - Val Loss: {avg_val_loss:.12f} - Learning Rate: {optimizer.param_groups[0]['lr']:.2e}")
 
-    #Printeo cada 10 epochs
     if (epoch+1) % 10 == 0: 
         this_ckpt_path = os.path.join(ckpt_path, f"epoch_{epoch+1}.pth")
         torch.save({
@@ -372,6 +399,22 @@ for epoch in range(args.epochs):
             "scheduler": scheduler.state_dict(),
             "loss": running_loss/len(train_dataloader)
         }, this_ckpt_path)
+
+    # Save best model
+    if avg_val_loss < best_val_loss:
+        best_val_loss = avg_val_loss
+        torch.save({
+            "epoch": epoch + 1,
+            "state_dict": model.state_dict(),
+            "loss": avg_val_loss
+        }, os.path.join(ckpt_path, "best_model.pth"))
+
+    # Early stopping check
+    early_stopping(avg_val_loss)
+    if early_stopping.early_stop:
+        print(f"Early stopping at epoch {epoch+1}")
+        logger.info(f"Early stopping at epoch {epoch+1}")
+        break
 
 plt.figure()
 plt.plot(epoch_losses, label="Train Loss")
@@ -389,7 +432,7 @@ plt.savefig(os.path.join(losses_dir, "loss_plot.png"), dpi=200)
 with open(os.path.join(losses_dir, "losses.txt"), "w") as f:
     f.write("Epoch, TrainLoss, ValLoss\n")
     for i, (tl, vl) in enumerate(zip(epoch_losses, val_losses)):
-        f.write(f"{i}, {tl:.8f}, {vl:.8f}\n")
+        f.write(f"{i}, {tl:.12f}, {vl:.12f}\n")
 
 ####################################################################
 

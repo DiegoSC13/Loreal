@@ -48,7 +48,7 @@ def resample_poisson_sequence(y, gamma, gamma_target=1.4, seed=None):
 
 def linear_transform(data, a, b, u=1.4, v=0, inverse=False):
     alpha =  u/a
-    beta  = (u*b/a - a*v/u) / a
+    beta  = v - u*b/a
 
     if inverse:
         return (data-beta) / alpha

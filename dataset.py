@@ -176,7 +176,7 @@ class FastDVDnetDataset(Dataset):
         
         # Valery's linear transform / data_scale
         stack = linear_transform(stack, a, b) / self.data_scale
-        # stack = torch.clamp(stack, min=0.0) #Comment, probably it's not doing anything
+        stack = torch.clamp(stack, min=0.0)
 
         # Random crop
         if self.patch_size is not None:

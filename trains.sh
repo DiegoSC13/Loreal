@@ -24,6 +24,7 @@ CKPT="/mnt/bdisk/dewil/loreal_POC2/sequences_for_self-supervised_tests/FastDVDne
 TIMESTAMP=$(date +"%y-%m-%d_%H-%M-%S")
 OUTPUT_BASE=./results/train_$TIMESTAMP
 #OUTPUT_BASE="./results"
+DATA_SCALE=9000
 
 INPUT_SEQ="../../sequences_almost_Poisson/HF4_Bruite_1024pix_Ex780nm_10pc_LineAccu12.tif_dir/image_%03d.tif"
 PREPROC="../../sequences_almost_Poisson/HF4_Bruite_1024pix_Ex780nm_10pc_LineAccu12.tif_dir/pre-processing.txt"
@@ -47,12 +48,13 @@ for lr in "${LR_VALUES[@]}"; do
       --ckpt ${CKPT} \
       --loss pure \
       --gamma 1.0 \
-      --data_scale 9000 \
+      --data_scale ${DATA_SCALE} \
       --tau1 ${tau1} \
       --batch_size 32 \
       --epochs ${EPOCHS} \
       --lr ${lr} \
       --patch_size 256 256 \
+      --transform d4 \
       &> ${LOGFILE}
 
     echo "Testing ${EXP_NAME}"
@@ -63,7 +65,8 @@ for lr in "${LR_VALUES[@]}"; do
       --pre_processing_data ${PREPROC} \
       --first 0 \
       --last 29 \
-      --network ${NETWORK}
+      --network ${NETWORK} \
+      --data_scale ${DATA_SCALE}
 
   done
 done
