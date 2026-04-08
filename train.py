@@ -21,7 +21,7 @@ from physics import get_physics
 from deepinv.loss.r2r import R2RLoss, R2RModel
 from utils import *
 
-sys.path.append("/mnt/bdisk/dewil/loreal_POC2/sequences_for_self-supervised_tests/FastDVDnet_codes")
+sys.path.append("/home/diegosilvera/Descargas")
 from models_FastDVDnet_sans_noise_map import FastDVDnet
 
 # This allows for accelerated Tensor Core training; cryoDRGN uses it. I've never been able to use it, but I want to try it someday.
@@ -239,9 +239,16 @@ scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.scheduler_
 if args.ckpt:
     ckpt = torch.load(args.ckpt, map_location=device)
     state_dict = ckpt.get("state_dict", ckpt)  # compatible con ambos formatos
-    model.load_state_dict(state_dict, strict=False)
-    # check_checkpoint_loading_with_magnitude(model, state_dict)
-    print("Loaded model weights (optimizer reinitialized).")
+    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+    if missing_keys:
+        print(f"WARNING: Missing keys during loading: {len(missing_keys)}")
+    if unexpected_keys:
+        print(f"WARNING: Unexpected keys during loading: {len(unexpected_keys)}")
+    
+    if not missing_keys:
+        print("Loaded model weights SUCCESSFULLY (all expected keys found).")
+    else:
+        print("Loaded model weights PARTIALLY (some keys were missing).")
 
 # --- EVALUACIÓN EPOCH 0 (Punto de partida) ---
 print("Evaluating Epoch 0 (baseline)...")
@@ -260,11 +267,28 @@ with torch.no_grad():
             wrapper.set_context(stack)
 
         if isinstance(loss_fn, R2RLoss):
-            output = wrapper(y_central, physics, update_parameters=False)
+            # Para calcular la loss R2R en la baseline, necesitamos generar una re-corrupción (y1).
+            # R2RModel (wrapper) solo lo hace si .training es True y se pasa update_parameters=True.
+            wrapper.training = True
+            output = wrapper(y_central, physics, update_parameters=True)
+            wrapper.training = False
         else:
             output = wrapper(y_central)
 
         loss = loss_fn(y_central, output, physics, wrapper).mean()
+
+        if i == 0: # Diagnostic for first batch
+            print(f"\n--- Diagnostic (First Batch) ---")
+            print(f"  Stack range:     [{stack.min():.6f}, {stack.max():.6f}] mean={stack.mean():.6f}")
+            print(f"  y_central range: [{y_central.min():.6f}, {y_central.max():.6f}]")
+            print(f"  Output range:    [{output.min():.6f}, {output.max():.6f}] mean={output.mean():.6f}")
+            if isinstance(loss_fn, R2RLoss):
+                y1 = wrapper.get_corruption()
+                y2 = (1 / loss_fn.alpha) * (y_central - y1 * (1 - loss_fn.alpha))
+                print(f"  y1 (re-corrupt): [{y1.min():.6f}, {y1.max():.6f}]")
+                print(f"  y2 (target):     [{y2.min():.6f}, {y2.max():.6f}]")
+            print(f"--------------------------------\n")
+
         initial_loss += loss.item()
         num_batches_eval += 1
 
@@ -382,8 +406,9 @@ plt.yscale('log') # Use log scale because first epochs have very high loss
 plt.legend()
 plt.title("Training vs Validation Loss (Log Scale)")
 plt.grid(True, which="both", ls="-", alpha=0.5)
-plt.show()
+# plt.show()
 plt.savefig(os.path.join(losses_dir, "loss_plot.png"), dpi=200)
+plt.close()
 
 # Also save as a text file for easy reading
 with open(os.path.join(losses_dir, "losses.txt"), "w") as f:

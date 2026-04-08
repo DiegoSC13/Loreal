@@ -1,4 +1,4 @@
-name: /mnt/bdisk/miniconda_envs/loreal_diego_cuda
+name: loreal_diego_cuda
 channels:
   - defaults
   - conda-forge

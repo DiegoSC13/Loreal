@@ -10,16 +10,28 @@ import torch
 import torch.nn as nn
 
 import sys
-sys.path.append("/mnt/bdisk/dewil/loreal_POC2/sequences_for_self-supervised_tests/FastDVDnet_codes")
+#sys.path.append("/mnt/bdisk/dewil/loreal_POC2/sequences_for_self-supervised_tests/FastDVDnet_codes")
+sys.path.append("/home/diegosilvera/Descargas")
 from models_FastDVDnet_sans_noise_map import FastDVDnet
 
 import iio
 
-from functions import *
+from utils import linear_transform
+
+def reads_image(path, H, W, im_range=255):
+    import iio
+    image = iio.read(path)[:H, :W]
+    image = image / im_range
+    if len(image.shape) == 2: # grayscale
+        image = np.expand_dims(image, axis=0) # [1, H, W]
+    else:
+        # If it's [H, W, C], transpose to [C, H, W]
+        image = image.transpose(2,0,1)
+    return torch.Tensor(image)
 
 cuda = torch.cuda.is_available()
+device = torch.device('cuda' if cuda else 'cpu')
 if cuda:
-    device = torch.device('cuda')
     print("CUDA is available")
 
    
