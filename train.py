@@ -85,8 +85,10 @@ seed=43
 
 # --- Escalado de hiperparámetros ---
 # Si los datos se dividen por data_scale, los hiperparámetros de ruido deben escalarse proporcionalmente
-sigma_scaled = 1.4 * args.sigma / args.data_scale if args.sigma is not None else None
-gamma_scaled = args.gamma * args.data_scale / 1.4 if args.gamma is not None else None
+# sigma_scaled = 1.4 * args.sigma / args.data_scale if args.sigma is not None else None
+# gamma_scaled = args.gamma * 1.4 / args.data_scale if args.gamma is not None else None
+sigma_scaled = args.sigma / args.data_scale if args.sigma is not None else None
+gamma_scaled = args.gamma / args.data_scale if args.gamma is not None else None
 tau1_scaled   = args.tau1 #/ args.data_scale 
 tau2_scaled   = args.tau2 #/ args.data_scale 
 
@@ -228,13 +230,14 @@ loss_fn = get_loss(
         # mc_iter=args.mc_iter
         step_size = args.step_size,  #UNSURE
         momentum  = args.momentum   #UNSURE
+        #eval_n_samples = 25          # More samples for stable evaluation
     )
 
 # Adapt model if using R2RLoss, neccesary for R2R
 if isinstance(loss_fn, R2RLoss):
     wrapper = loss_fn.adapt_model(wrapper)
     if args.loss == "r2r_p" and gamma_scaled is not None:
-        print(f"\n> [R2R Poisson] Gamma (gain) configurada (escalada): {gamma_scaled}")
+        print(f"\n> [R2R Poisson] Gamma (gain) configurada (escalada): {gamma_scaled:.12f}")
         print(f"> [R2R Poisson] Data scale (divisor): {args.data_scale}")
         print(f"> [R2R Poisson] IMPORTANTE: La ganancia ha sido adaptada a la escala [0, 1] usada por el modelo.\n")
 
@@ -250,7 +253,7 @@ if args.ckpt:
     print("Loaded model weights (optimizer reinitialized).")
 
 class EarlyStopping:
-    def __init__(self, patience=20, min_delta=0):
+    def __init__(self, patience=40, min_delta=0):
         self.patience = patience
         self.min_delta = min_delta
         self.counter = 0
@@ -268,7 +271,7 @@ class EarlyStopping:
             self.best_loss = val_loss
             self.counter = 0
 
-early_stopping = EarlyStopping(patience=20)
+early_stopping = EarlyStopping(patience=40)
 best_val_loss = float('inf')
 
 # --- EVALUACIÓN EPOCH 0 (Punto de partida) ---
@@ -278,7 +281,7 @@ initial_loss = 0.0
 num_batches_eval = 0
 with torch.no_grad():
     for i, (stack, target) in enumerate(train_dataloader):
-        if i >= 10: break  # Usamos 10 batches para una estimación rápida
+        if i >= 20: break  # Usamos 20 batches para una mejor estimación
         stack = stack.to(device)
         y_central = stack[:, 2:3, :, :]
         
@@ -288,16 +291,27 @@ with torch.no_grad():
             wrapper.set_context(stack)
 
         if isinstance(loss_fn, R2RLoss):
-            output = wrapper(y_central, physics, update_parameters=False)
+            # Para una evaluación estable, promediamos la LOSS sobre múltiples muestras
+            # R2RModel solo actualiza .corruption si .training=True y update_parameters=True
+            n_samples = 5 # Usamos 5 muestras por batch para no ralentizar demasiado
+            batch_loss = 0
+            for _ in range(n_samples):
+                wrapper.training = True
+                output = wrapper(y_central, physics, update_parameters=True)
+                wrapper.training = False
+                batch_loss += loss_fn(y_central, output, physics, wrapper).mean().item()
+            loss_val = batch_loss / n_samples
         else:
             output = wrapper(y_central)
+            loss_val = loss_fn(y_central, output, physics, wrapper).mean().item()
 
-        loss = loss_fn(y_central, output, physics, wrapper).mean()
-        initial_loss += loss.item()
+        initial_loss += loss_val
         num_batches_eval += 1
+        del output, stack, y_central
 
 avg_init_loss = initial_loss / num_batches_eval
-print(f"Epoch 0 Loss: {avg_init_loss:.8f}\n")
+print(f"Epoch 0 Loss (proxy MSE): {avg_init_loss:.12f}\n")
+torch.cuda.empty_cache()
 
 epoch_losses = [avg_init_loss]
 val_losses = [avg_init_loss]
@@ -357,19 +371,22 @@ for epoch in range(args.epochs):
                 wrapper.set_context(stack)
 
             if isinstance(loss_fn, R2RLoss):
-                # Para calcular la loss R2R en validación, necesitamos generar una re-corrupción (y1).
-                # R2RModel (wrapper) solo lo hace si .training es True y se pasa update_parameters=True.
-                # Forzamos training=True en el wrapper para el forward, pero el modelo interno (FastDVDnet) 
-                # sigue en eval() si no se llamó a .train() recursivamente.
-                wrapper.training = True
-                output = wrapper(y_central, physics, update_parameters=True)
-                wrapper.training = False
+                # Evaluación estable promediando LOSS sobre múltiples muestras
+                n_samples = 5 
+                batch_loss = 0
+                for _ in range(n_samples):
+                    wrapper.training = True
+                    output = wrapper(y_central, physics, update_parameters=True)
+                    wrapper.training = False
+                    batch_loss += loss_fn(y_central, output, physics, wrapper).mean().item()
+                val_loss += batch_loss / n_samples
             else:
                 output = wrapper(y_central)
-
-            loss = loss_fn(y_central, output, physics, wrapper).mean()
-            val_loss += loss.item()
+                loss = loss_fn(y_central, output, physics, wrapper).mean()
+                val_loss += loss.item()
+            del output, stack, y_central
     
+    torch.cuda.empty_cache()
     avg_val_loss = val_loss / len(val_dataloader) if len(val_dataloader) > 0 else 0
     val_losses.append(avg_val_loss)
 
@@ -416,17 +433,45 @@ for epoch in range(args.epochs):
         logger.info(f"Early stopping at epoch {epoch+1}")
         break
 
-plt.figure()
+# Save final model state (in case early stopping happened or EPOCHS was not a multiple of 10)
+final_ckpt_path = os.path.join(ckpt_path, f"epoch_{epoch+1}.pth")
+if not os.path.exists(final_ckpt_path):
+    torch.save({
+        "epoch": epoch + 1,
+        "state_dict": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict(),
+        "loss": running_loss/len(train_dataloader)
+    }, final_ckpt_path)
+
+plt.figure(figsize=(10, 6))
 plt.plot(epoch_losses, label="Train Loss")
 plt.plot(val_losses, label="Val Loss")
 plt.xlabel("Epoch")
 plt.ylabel("Loss")
-plt.yscale('log') # Use log scale because first epochs have very high loss
+
+# Robust scaling logic for SURE losses (can be negative)
+all_losses = np.concatenate([epoch_losses, val_losses])
+min_l, max_l = np.min(all_losses), np.max(all_losses)
+
+if min_l > 0 and (max_l / (min_l + 1e-12) > 100):
+    plt.yscale('log')
+    plt.title("Training vs Validation Loss (Log Scale)")
+elif min_l < 0:
+    # If there are negative values, log scale is not possible. 
+    # We use symlog if the range is large, or linear if it's manageable.
+    if max_l - min_l > 1000:
+        plt.yscale('symlog', linthresh=1.0)
+        plt.title("Training vs Validation Loss (SymLog Scale)")
+    else:
+        plt.title("Training vs Validation Loss (Linear Scale)")
+else:
+    plt.title("Training vs Validation Loss (Linear Scale)")
+
 plt.legend()
-plt.title("Training vs Validation Loss (Log Scale)")
 plt.grid(True, which="both", ls="-", alpha=0.5)
-plt.show()
 plt.savefig(os.path.join(losses_dir, "loss_plot.png"), dpi=200)
+# plt.show() # Commented to avoid blocking in non-interactive environments
 
 # Also save as a text file for easy reading
 with open(os.path.join(losses_dir, "losses.txt"), "w") as f:

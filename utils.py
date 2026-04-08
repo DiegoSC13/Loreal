@@ -2,6 +2,7 @@ import os
 import numpy as np
 import torch
 import random
+import fire
 
 def generar_lista_tif(directorio, archivo_salida="lista_tif.txt"):
     lista_tif = []
@@ -69,3 +70,6 @@ class RandomD4:
             x = torch.flip(x, dims=[-1])
 
         return x
+
+if __name__ == "__main__":
+    fire.Fire()

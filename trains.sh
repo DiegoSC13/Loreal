@@ -12,58 +12,74 @@ PYTHON=/mnt/bdisk/miniconda_envs/loreal_diego_cuda/bin/python
 # EPOCHS=100
 
 LR_VALUES=($1)
-TAU1_VALUES=($2)
+HYPER_VALUES=($2) #Para PURE es tau1, para R2R es alpha
 EPOCHS=$3
+LOSS=${4:-pure}
 
 echo "LR: ${LR_VALUES[@]}"
-echo "TAU1: ${TAU1_VALUES[@]}"
+echo "HYPER: ${HYPER_VALUES[@]}"
 echo "EPOCHS: $EPOCHS"
+echo "LOSS: $LOSS"
 
 SEQUENCE_DIR="/mnt/bdisk/dewil/loreal_POC2/sequences_almost_Poisson"
-CKPT="/mnt/bdisk/dewil/loreal_POC2/sequences_for_self-supervised_tests/FastDVDnet_codes/universal_network_for_Poisson_noise.pth"
+#CKPT="/mnt/bdisk/dewil/loreal_POC2/sequences_for_self-supervised_tests/FastDVDnet_codes/universal_network_for_Poisson_noise.pth"
+CKPT="/mnt/bdisk/dewil/loreal_POC2/sequences_for_self-supervised_tests/FastDVDnet_codes/FastDVDnet-pure_poisson-a=1-normalization_by_255.pth"
 TIMESTAMP=$(date +"%y-%m-%d_%H-%M-%S")
-OUTPUT_BASE=./results/train_$TIMESTAMP
-#OUTPUT_BASE="./results"
-DATA_SCALE=9000
+OUTPUT_BASE=./results/train_${TIMESTAMP}_${LOSS}
+DATA_SCALE=255 #9000
+BATCH_SIZE=16
+PATCH_SIZE="256 256"
+
+GAMMA=1.0
 
 INPUT_SEQ="../../sequences_almost_Poisson/HF4_Bruite_1024pix_Ex780nm_10pc_LineAccu12.tif_dir/image_%03d.tif"
 PREPROC="../../sequences_almost_Poisson/HF4_Bruite_1024pix_Ex780nm_10pc_LineAccu12.tif_dir/pre-processing.txt"
 #NETWORK="../../sequences_for_self-supervised_tests/FastDVDnet_codes/universal_network_for_Poisson_noise.pth"
 
 for lr in "${LR_VALUES[@]}"; do
-  for tau1 in "${TAU1_VALUES[@]}"; do
+  for h in "${HYPER_VALUES[@]}"; do
 
-    EXP_NAME="lr_${lr}_tau1_${tau1}"
+    if [ "$LOSS" == "r2r_p" ]; then
+      EXP_NAME="lr_${lr}_alpha_${h}"
+      HYPER_ARG="--alpha ${h}"
+    else
+      EXP_NAME="lr_${lr}_tau1_${h}"
+      HYPER_ARG="--tau1 ${h}"
+    fi
+
     OUTDIR="${OUTPUT_BASE}/${EXP_NAME}"
-    NETWORK="${OUTDIR}/ckpts/epoch_${EPOCHS}.pth"
+    # NETWORK se define después de train.py para soportar early stopping
     mkdir -p "${OUTDIR}"
 
     LOGFILE="${OUTDIR}/train.log"
 
-    echo "Command: $PYTHON train.py --sequence_directory ${SEQUENCE_DIR} --output_path ${OUTDIR} --ckpt ${CKPT} --loss pure --gamma 1.0 --data_scale ${DATA_SCALE} --tau1 ${tau1} --batch_size 32 --epochs ${EPOCHS} --lr ${lr} --patch_size 256 256 --transform d4" > ${LOGFILE}
+    echo "Command: $PYTHON train.py --sequence_directory ${SEQUENCE_DIR} --output_path ${OUTDIR} --ckpt ${CKPT} --loss ${LOSS} --gamma ${GAMMA} --data_scale ${DATA_SCALE} ${HYPER_ARG} --batch_size ${BATCH_SIZE} --epochs ${EPOCHS} --lr ${lr} --patch_size ${PATCH_SIZE} --transform d4" > ${LOGFILE}
 
     $PYTHON train.py \
       --sequence_directory ${SEQUENCE_DIR} \
       --output_path ${OUTDIR} \
       --ckpt ${CKPT} \
-      --loss pure \
-      --gamma 1.0 \
+      --loss ${LOSS} \
+      --gamma ${GAMMA} \
       --data_scale ${DATA_SCALE} \
-      --tau1 ${tau1} \
-      --batch_size 32 \
+      ${HYPER_ARG} \
+      --batch_size ${BATCH_SIZE} \
       --epochs ${EPOCHS} \
       --lr ${lr} \
-      --patch_size 256 256 \
+      --patch_size ${PATCH_SIZE} \
       --transform d4 \
       &>> ${LOGFILE}
 
-    echo "Testing ${EXP_NAME}"
-    TEST_LOGFILE="${OUTDIR}/test.log"
-    echo "Command: $PYTHON test4.py --input ${INPUT_SEQ} --output ${OUTDIR}/last_epoch/test_output_%03d.tif --pre_processing_data ${PREPROC} --first 0 --last 29 --network ${NETWORK} --data_scale ${DATA_SCALE}" > ${TEST_LOGFILE}
+    # Uso del mejor modelo (best_model.pth) para test
+    NETWORK="${OUTDIR}/ckpts/best_model.pth"
+
+    echo "Testing ${EXP_NAME} with BEST network: $NETWORK"
+    TEST_LOGFILE="${OUTDIR}/test_best.log"
+    echo "Command: $PYTHON test4.py --input ${INPUT_SEQ} --output ${OUTDIR}/best_model/test_output_%03d.tif --pre_processing_data ${PREPROC} --first 0 --last 29 --network ${NETWORK} --data_scale ${DATA_SCALE}" > ${TEST_LOGFILE}
 
     $PYTHON test4.py \
       --input ${INPUT_SEQ} \
-      --output ${OUTDIR}/last_epoch/test_output_%03d.tif \
+      --output ${OUTDIR}/best_model/test_output_%03d.tif \
       --pre_processing_data ${PREPROC} \
       --first 0 \
       --last 29 \

@@ -71,7 +71,29 @@ def plot_experiments(base_dir, filter_str=None, mode='both', output='comparison.
         print("No se pudieron extraer datos válidos de los archivos encontrados.")
         return
 
-    plt.yscale('log')
+    # Robust scaling logic for SURE losses (can be negative)
+    all_l = []
+    # I need to collect all plotted data to calculate scaling
+    for f in files:
+        data = np.genfromtxt(f, delimiter=',', skip_header=1)
+        if data.size == 0: continue
+        if data.ndim == 1: data = data.reshape(1, -1)
+        if mode in ['train', 'both']: all_l.append(data[:, 1])
+        if mode in ['val', 'both']: all_l.append(data[:, 2])
+    
+    if all_l:
+        all_l = np.concatenate(all_l)
+        min_l, max_l = np.min(all_l), np.max(all_l)
+        if min_l > 0 and (max_l / (min_l + 1e-12) > 100):
+            plt.yscale('log')
+        elif min_l < 0:
+            if max_l - min_l > 1000:
+                plt.yscale('symlog', linthresh=1.0)
+            else:
+                plt.yscale('linear')
+        else:
+            plt.yscale('linear')
+
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
     plt.title(f'Comparación de Experimentos - Modo: {mode}')
