@@ -6,3 +6,4 @@ testing_utils.ipynb
 test_results/
 *.png
 *.log
+env_paths.sh

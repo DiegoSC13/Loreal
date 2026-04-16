@@ -1,0 +1,18 @@
+#!/bin/bash
+
+# --- Environment Configuration ---
+
+# Path to the python binary in your conda environment
+PYTHON_BIN="/mnt/bdisk/miniconda_envs/loreal_diego_cuda/bin/python"
+
+# Base directory for the project
+WORKDIR="/mnt/bdisk/dewil/loreal_POC2"
+
+# Directory where image sequences are stored
+SEQUENCE_DIR_BASE="${WORKDIR}/sequences_almost_Poisson"
+
+# Path to the external FastDVDnet library
+EXTERNAL_CODES_DIR="${WORKDIR}/sequences_for_self-supervised_tests/FastDVDnet_codes"
+
+# Default pretrained checkpoint
+DEFAULT_CKPT_PATH="${EXTERNAL_CODES_DIR}/FastDVDnet-pure_poisson-a=1-normalization_by_255.pth"
