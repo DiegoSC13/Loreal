@@ -145,7 +145,7 @@ class FastDVDnetDataset(Dataset):
                     ]
                     self.stacks.append((stack_paths, float(a), float(b)))
 
-    def __len__(self):
+    def __len__(self): #I can change that to have more iterations per epoch
         return len(self.stacks)
 
     def make_divisible_by_4(self, img):
