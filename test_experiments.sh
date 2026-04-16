@@ -13,9 +13,9 @@ fi
 
 # Configuración por defecto (tomada de trains.sh)
 PYTHON=/mnt/bdisk/miniconda_envs/loreal_diego_cuda/bin/python
-INPUT_SEQ=${2:-"../../sequences_almost_Poisson/HF4_Bruite_1024pix_Ex780nm_10pc_LineAccu12.tif_dir/image_%03d.tif"}
-PREPROC=${3:-"../../sequences_almost_Poisson/HF4_Bruite_1024pix_Ex780nm_10pc_LineAccu12.tif_dir/pre-processing.txt"}
-DATA_SCALE=${4:-9000}
+INPUT_SEQ=${2:-"/mnt/bdisk/dewil/loreal_POC2/sequences/sequences_december25/new/HF1/HF1_Bruite_1024pix_Ex780nm_10pc_LineAccu12.tif_dir/image_%03d.tif"}
+PREPROC=${3:-"/mnt/bdisk/dewil/loreal_POC2/sequences/sequences_december25/new/HF1/HF1_Bruite_1024pix_Ex780nm_10pc_LineAccu12.tif_dir/pre-processing.txt"}
+DATA_SCALE=${4:-255}
 FIRST_FRAME=${5:-0}
 LAST_FRAME=${6:-29}
 
