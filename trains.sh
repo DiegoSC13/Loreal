@@ -4,9 +4,23 @@
 #source /mnt/bdisk/miniconda3/etc/profile.d/conda.sh
 # conda activate loreal_diego_cuda
 
-PYTHON=/mnt/bdisk/miniconda_envs/loreal_diego_cuda/bin/python
+# --- CARGAR CONFIGURACIÓN LOCAL ---
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "${SCRIPT_DIR}/env_paths.sh" ]; then
+    source "${SCRIPT_DIR}/env_paths.sh"
+fi
 
-# Parámetros
+# Variables de entorno con fallbacks
+PYTHON=${PYTHON_BIN:-"/mnt/bdisk/miniconda_envs/loreal_diego_cuda/bin/python"}
+WORKDIR=${WORKDIR:-"/mnt/bdisk/dewil/loreal_POC2"}
+SEQUENCE_DIR=${SEQUENCE_DIR_BASE:-"${WORKDIR}/sequences_almost_Poisson"}
+EXTERNAL_CODES_DIR=${EXTERNAL_CODES_DIR:-"${WORKDIR}/sequences_for_self-supervised_tests/FastDVDnet_codes"}
+DEFAULT_CKPT=${DEFAULT_CKPT_PATH:-"${EXTERNAL_CODES_DIR}/FastDVDnet-pure_poisson-a=1-normalization_by_255.pth"}
+
+# Exportar PYTHONPATH como respaldo
+export PYTHONPATH="${EXTERNAL_CODES_DIR}:${PYTHONPATH}"
+
+# Parámetros (desde línea de comandos)
 # LR_VALUES=("1e-6")
 # TAU1_VALUES=("0.005" "0.0005" "0.0001" "0.00005" "0.00001")
 # EPOCHS=100
@@ -14,26 +28,33 @@ PYTHON=/mnt/bdisk/miniconda_envs/loreal_diego_cuda/bin/python
 LR_VALUES=($1)
 HYPER_VALUES=($2) #Para PURE es tau1, para R2R es alpha
 EPOCHS=$3
-LOSS=${4:-pure}
+LOSS=${4:-pure} #El -algo es el valor por defecto. Si no se pone nada, se usa pure
+PATIENCE=${5:-0}             # Default: early stopping disabled
+TEST_SAMPLES=${6:-25}         # Default samples for R2R ensemble
+GEOMETRIC_TTA=${7:-false}     # Default: no rotations/flips
 
 echo "LR: ${LR_VALUES[@]}"
 echo "HYPER: ${HYPER_VALUES[@]}"
 echo "EPOCHS: $EPOCHS"
 echo "LOSS: $LOSS"
+echo "PATIENCE: $PATIENCE"
+echo "TEST_SAMPLES: $TEST_SAMPLES"
+echo "GEOMETRIC_TTA: $GEOMETRIC_TTA"
 
-SEQUENCE_DIR="/mnt/bdisk/dewil/loreal_POC2/sequences_almost_Poisson"
-#CKPT="/mnt/bdisk/dewil/loreal_POC2/sequences_for_self-supervised_tests/FastDVDnet_codes/universal_network_for_Poisson_noise.pth"
-CKPT="/mnt/bdisk/dewil/loreal_POC2/sequences_for_self-supervised_tests/FastDVDnet_codes/FastDVDnet-pure_poisson-a=1-normalization_by_255.pth"
+DIEGO_DIR="${WORKDIR}/diego/loreal_training_code"
+
+#CKPT="${WORKDIR}/sequences_for_self-supervised_tests/FastDVDnet_codes/universal_network_for_Poisson_noise.pth"
+CKPT="${DEFAULT_CKPT}"
 TIMESTAMP=$(date +"%y-%m-%d_%H-%M-%S")
-OUTPUT_BASE=./results/train_${TIMESTAMP}_${LOSS}
+OUTPUT_BASE=./results/train_${TIMESTAMP}_${LOSS} #Esta me gusta así porque siempre crea results en el mismo sitio
 DATA_SCALE=255 #9000
 BATCH_SIZE=16
 PATCH_SIZE="256 256"
 
 GAMMA=1.0
 
-INPUT_SEQ="../../sequences_almost_Poisson/HF4_Bruite_1024pix_Ex780nm_10pc_LineAccu12.tif_dir/image_%03d.tif"
-PREPROC="../../sequences_almost_Poisson/HF4_Bruite_1024pix_Ex780nm_10pc_LineAccu12.tif_dir/pre-processing.txt"
+INPUT_SEQ="${SEQUENCE_DIR}/HF4_Bruite_1024pix_Ex780nm_10pc_LineAccu12.tif_dir/image_%03d.tif"
+PREPROC="${SEQUENCE_DIR}/HF4_Bruite_1024pix_Ex780nm_10pc_LineAccu12.tif_dir/pre-processing.txt"
 #NETWORK="../../sequences_for_self-supervised_tests/FastDVDnet_codes/universal_network_for_Poisson_noise.pth"
 
 for lr in "${LR_VALUES[@]}"; do
@@ -68,14 +89,27 @@ for lr in "${LR_VALUES[@]}"; do
       --lr ${lr} \
       --patch_size ${PATCH_SIZE} \
       --transform d4 \
+      --patience ${PATIENCE} \
       &>> ${LOGFILE}
 
     # Uso del mejor modelo (best_model.pth) para test
     NETWORK="${OUTDIR}/ckpts/best_model.pth"
 
-    echo "Testing ${EXP_NAME} with BEST network: $NETWORK"
+    # Preparar argumentos de test (Self-ensemble solo para R2R)
+    if [[ "$LOSS" == "r2r_p" || "$LOSS" == "r2r_g" ]]; then
+      TEST_ARGS="--n_samples ${TEST_SAMPLES} --loss ${LOSS} --alpha ${h} --gamma ${GAMMA}"
+    else
+      TEST_ARGS="--n_samples 1"
+    fi
+
+    # Añadir geometric TTA si está activado
+    if [ "$GEOMETRIC_TTA" = true ]; then
+      TEST_ARGS="${TEST_ARGS} --geometric_ensemble"
+    fi
+
+    echo "Testing ${EXP_NAME} with BEST network: $NETWORK (Samples: ${TEST_SAMPLES})"
     TEST_LOGFILE="${OUTDIR}/test_best.log"
-    echo "Command: $PYTHON test4.py --input ${INPUT_SEQ} --output ${OUTDIR}/best_model/test_output_%03d.tif --pre_processing_data ${PREPROC} --first 0 --last 29 --network ${NETWORK} --data_scale ${DATA_SCALE}" > ${TEST_LOGFILE}
+    echo "Command: $PYTHON test4.py --input ${INPUT_SEQ} --output ${OUTDIR}/best_model/test_output_%03d.tif --pre_processing_data ${PREPROC} --first 0 --last 29 --network ${NETWORK} --data_scale ${DATA_SCALE} ${TEST_ARGS}" > ${TEST_LOGFILE}
 
     $PYTHON test4.py \
       --input ${INPUT_SEQ} \
@@ -85,6 +119,7 @@ for lr in "${LR_VALUES[@]}"; do
       --last 29 \
       --network ${NETWORK} \
       --data_scale ${DATA_SCALE} \
+      ${TEST_ARGS} \
       &>> ${TEST_LOGFILE}
 
   done

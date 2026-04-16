@@ -21,7 +21,28 @@ from physics import get_physics
 from deepinv.loss.r2r import R2RLoss, R2RModel
 from utils import *
 
-sys.path.append("/mnt/bdisk/dewil/loreal_POC2/sequences_for_self-supervised_tests/FastDVDnet_codes")
+# --- CARGA DE RUTAS LOCALES ---
+def load_local_paths():
+    config_path = os.path.join(os.path.dirname(__file__), 'env_paths.sh')
+    if os.path.exists(config_path):
+        env_vars = {}
+        with open(config_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if '=' in line and not line.startswith('#'):
+                    key, value = line.split('=', 1)
+                    value = value.strip().strip('"').strip("'")
+                    # Expand variables like ${WORKDIR} or $WORKDIR
+                    for k, v in env_vars.items():
+                        value = value.replace(f'${{{k}}}', v)
+                        value = value.replace(f'${k}', v)
+                    env_vars[key] = value
+                    
+                    if key == 'EXTERNAL_CODES_DIR':
+                        if value not in sys.path:
+                            sys.path.append(value)
+
+load_local_paths()
 from models_FastDVDnet_sans_noise_map import FastDVDnet
 
 # This allows for accelerated Tensor Core training; cryoDRGN uses it. I've never been able to use it, but I want to try it someday.
@@ -69,8 +90,8 @@ parser.add_argument("--momentum", type=float, nargs=2, default=(0.9, 0.9), help=
 parser.add_argument("--batch_size", type=int, default=32) #Default of SSIBench is 32, not sure if it's the best option here
 parser.add_argument("--epochs", type=int, default=50)
 parser.add_argument("--lr", type=float, default=1e-4)
-parser.add_argument("--scheduler_step_size", type=int, default=50)
-parser.add_argument("--scheduler_gamma", type=float, default=0.1)
+parser.add_argument("--scheduler_step_size", type=int, default=100)
+parser.add_argument("--scheduler_gamma", type=float, default=0.5)
 parser.add_argument("--num_workers", type=int, default=0)
 parser.add_argument("--patch_size", type=int, nargs=2, default=None,
                     help="Tamaño del recorte aleatorio, ej: --patch_size 128 128")
@@ -78,6 +99,7 @@ parser.add_argument("--transform", type=str, default=None,
                     help="Nombre de la transformación a aplicar (opcional)")
 parser.add_argument("--loss_scaler", type=float, default=1.0, help="Factor para escalar la pérdida antes del backward (para evitar vanishing gradients en escalas pequeñas)")
 parser.add_argument("--data_scale", type=float, default=9000.0, help="Factor divisor para los datos tras la transformacion lineal (a,b)")
+parser.add_argument("--patience", type=int, default=0, help="Patience for early stopping. If 0 or less, early stopping is disabled.")
 args = parser.parse_args()
 
 #Seed
@@ -208,7 +230,7 @@ for x, target in train_dataloader:
 
 # Choose model
 model = FastDVDnet(num_input_frames=5).to(device)
-# Wrapper que adapta FastDVDnet (5 frames → 1 frame) a la interfaz que esperan las losses de DeepInverse
+# Wrapper que adapta FastDVDnet (5 frames -> 1 frame) a la interfaz que esperan las losses de DeepInverse
 wrapper = SureWrapper(model).to(device)
 
 # Choose physics
@@ -271,7 +293,7 @@ class EarlyStopping:
             self.best_loss = val_loss
             self.counter = 0
 
-early_stopping = EarlyStopping(patience=40)
+early_stopping = EarlyStopping(patience=args.patience) if args.patience > 0 else None
 best_val_loss = float('inf')
 
 # --- EVALUACIÓN EPOCH 0 (Punto de partida) ---
@@ -427,11 +449,12 @@ for epoch in range(args.epochs):
         }, os.path.join(ckpt_path, "best_model.pth"))
 
     # Early stopping check
-    early_stopping(avg_val_loss)
-    if early_stopping.early_stop:
-        print(f"Early stopping at epoch {epoch+1}")
-        logger.info(f"Early stopping at epoch {epoch+1}")
-        break
+    if early_stopping is not None:
+        early_stopping(avg_val_loss)
+        if early_stopping.early_stop:
+            print(f"Early stopping at epoch {epoch+1}")
+            logger.info(f"Early stopping at epoch {epoch+1}")
+            break
 
 # Save final model state (in case early stopping happened or EPOCHS was not a multiple of 10)
 final_ckpt_path = os.path.join(ckpt_path, f"epoch_{epoch+1}.pth")
