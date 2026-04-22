@@ -32,6 +32,9 @@ LOSS=${4:-pure} #El -algo es el valor por defecto. Si no se pone nada, se usa pu
 PATIENCE=${5:-0}             # Default: early stopping disabled
 TEST_SAMPLES=${6:-25}         # Default samples for R2R ensemble
 GEOMETRIC_TTA=${7:-false}     # Default: no rotations/flips
+DATASET_TYPE=${8:-loreal} # <-- NUEVO: loreal o fmdd
+FMDD_MODE=${9:-raw}       # <-- NUEVO: raw o synthetic
+GAMMA=${10:-1.0}           # <-- NUEVO: ganancia de Poisson
 
 echo "LR: ${LR_VALUES[@]}"
 echo "HYPER: ${HYPER_VALUES[@]}"
@@ -40,18 +43,32 @@ echo "LOSS: $LOSS"
 echo "PATIENCE: $PATIENCE"
 echo "TEST_SAMPLES: $TEST_SAMPLES"
 echo "GEOMETRIC_TTA: $GEOMETRIC_TTA"
+echo "DATASET_TYPE: $DATASET_TYPE"
+echo "FMDD_MODE: $FMDD_MODE"
+echo "GAMMA: $GAMMA"
 
 DIEGO_DIR="${WORKDIR}/diego/loreal_training_code"
 
 #CKPT="${WORKDIR}/sequences_for_self-supervised_tests/FastDVDnet_codes/universal_network_for_Poisson_noise.pth"
+# Ajustar constantes según el dataset
+if [ "$DATASET_TYPE" == "fmdd" ]; then
+    if [ -z "${FMDD_DIR}" ]; then
+        echo "Error: FMDD_DIR is not set in env_paths.sh"
+        exit 1
+    fi
+    SEQUENCE_DIR=${FMDD_DIR}
+else
+    SEQUENCE_DIR=${SEQUENCE_DIR_BASE:-"${WORKDIR}/sequences_almost_Poisson"}
+fi
+
 CKPT="${DEFAULT_CKPT}"
 TIMESTAMP=$(date +"%y-%m-%d_%H-%M-%S")
-OUTPUT_BASE=./results/train_${TIMESTAMP}_${LOSS} #Esta me gusta así porque siempre crea results en el mismo sitio
 DATA_SCALE=255 #9000
+OUTPUT_BASE=./results/train_${TIMESTAMP}_${LOSS}_${DATASET_TYPE}
 BATCH_SIZE=16
 PATCH_SIZE="256 256"
 
-GAMMA=1.0
+# GAMMA se toma de los argumentos de entrada ahora
 
 INPUT_SEQ="${SEQUENCE_DIR}/HF4_Bruite_1024pix_Ex780nm_10pc_LineAccu12.tif_dir/image_%03d.tif"
 PREPROC="${SEQUENCE_DIR}/HF4_Bruite_1024pix_Ex780nm_10pc_LineAccu12.tif_dir/pre-processing.txt"
@@ -74,10 +91,12 @@ for lr in "${LR_VALUES[@]}"; do
 
     LOGFILE="${OUTDIR}/train.log"
 
-    echo "Command: $PYTHON train.py --sequence_directory ${SEQUENCE_DIR} --output_path ${OUTDIR} --ckpt ${CKPT} --loss ${LOSS} --gamma ${GAMMA} --data_scale ${DATA_SCALE} ${HYPER_ARG} --batch_size ${BATCH_SIZE} --epochs ${EPOCHS} --lr ${lr} --patch_size ${PATCH_SIZE} --transform d4" > ${LOGFILE}
+    echo "Command: $PYTHON train.py --sequence_directory ${SEQUENCE_DIR} --dataset_type ${DATASET_TYPE} --fmdd_mode ${FMDD_MODE} --output_path ${OUTDIR} --ckpt ${CKPT} --loss ${LOSS} --gamma ${GAMMA} --data_scale ${DATA_SCALE} ${HYPER_ARG} --batch_size ${BATCH_SIZE} --epochs ${EPOCHS} --lr ${lr} --patch_size ${PATCH_SIZE} --transform d4" > ${LOGFILE}
 
     $PYTHON train.py \
       --sequence_directory ${SEQUENCE_DIR} \
+      --dataset_type ${DATASET_TYPE} \
+      --fmdd_mode ${FMDD_MODE} \
       --output_path ${OUTDIR} \
       --ckpt ${CKPT} \
       --loss ${LOSS} \

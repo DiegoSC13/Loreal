@@ -14,7 +14,7 @@ import random
 import torch
 from torch.utils.data import DataLoader, random_split
 
-from dataset import LorealDataset, FastDVDnetDataset, get_valid_sequences
+from dataset import LorealDataset, FastDVDnetDataset, get_valid_sequences, FMDDDataset, get_fmdd_sequences
 from new_model import FastDVDnet_, SureWrapper
 from losses import get_loss
 from physics import get_physics
@@ -43,6 +43,7 @@ def load_local_paths():
                             sys.path.append(value)
 
 load_local_paths()
+import tifffile
 from models_FastDVDnet_sans_noise_map import FastDVDnet
 
 # This allows for accelerated Tensor Core training; cryoDRGN uses it. I've never been able to use it, but I want to try it someday.
@@ -74,7 +75,13 @@ def check_checkpoint_loading_with_magnitude(model, ckpt):
 
 parser = ArgumentParser()
 parser.add_argument("--sequence_directory", type=str, required=True,
-                    help="Ruta al directorio que contiene las secuencias de imágenes (.tif)")
+                    help="Ruta al directorio que contiene las secuencias de imágenes")
+parser.add_argument("--dataset_type", type=str, choices=("loreal", "fmdd"), default="loreal",
+                    help="Tipo de dataset a utilizar")
+parser.add_argument("--fmdd_mode", type=str, choices=("raw", "synthetic"), default="raw",
+                    help="Modo para el dataset FMDD: 'raw' usa ruido real, 'synthetic' genera ruido sobre GT")
+parser.add_argument("--fmdd_modalities", type=str, nargs="+", default=None,
+                    help="Lista de modalidades de FMDD a incluir (solo si dataset_type=fmdd)")
 parser.add_argument("--output_path", type=str, required=True, help="Directorio donde se crea carpeta de checkpoints")
 parser.add_argument("--ckpt", type=str, default=None, help="Ruta a checkpoint preentrenado") # Pretrained model path
 parser.add_argument("--loss", type=str, choices=("sure", "pure", "pgure", "unsure", "unpgure", "r2r_g", "r2r_p"), required=True) # "noise2score",# "unsure")
@@ -159,16 +166,23 @@ batch_size = args.batch_size if torch.cuda.is_available() else 1
 patch_size = tuple(args.patch_size) if args.patch_size else None
 
 root_dir = args.sequence_directory
-all_sequences_paths = []
-for root, dirs, files in os.walk(root_dir, followlinks=True):
-    # excluir check del recorrido
-    dirs[:] = [d for d in dirs if d != "check"]
-    for d in dirs:
-        seq_path = os.path.join(root, d)
-        all_sequences_paths.append(seq_path)
 
-# Filtrar secuencias válidas antes de dividir
-valid_sequences_info = get_valid_sequences(all_sequences_paths, out_file=os.path.join(sequences_dir, "sequences_left_out.txt"))
+if args.dataset_type == "loreal":
+    all_sequences_paths = []
+    for root, dirs, files in os.walk(root_dir, followlinks=True):
+        # excluir check del recorrido
+        dirs[:] = [d for d in dirs if d != "check"]
+        for d in dirs:
+            seq_path = os.path.join(root, d)
+            all_sequences_paths.append(seq_path)
+
+    # Filtrar secuencias válidas antes de dividir
+    valid_sequences_info = get_valid_sequences(all_sequences_paths, out_file=os.path.join(sequences_dir, "sequences_left_out.txt"))
+elif args.dataset_type == "fmdd":
+    t0_discovery = datetime.now()
+    valid_sequences_info = get_fmdd_sequences(root_dir, modalities=args.fmdd_modalities)
+    discovery_duration = (datetime.now() - t0_discovery).total_seconds()
+    print(f"Found {len(valid_sequences_info)} sequences in FMDD (Discovery time: {discovery_duration:.1f}s)")
 
 # Shuffle and split sequences
 random.seed(seed)
@@ -197,8 +211,12 @@ if args.transform == "d4":
     transform = RandomD4()
     print("Using D4 data augmentation.")
 
-train_dataset = FastDVDnetDataset(sequence_info=train_info, patch_size=patch_size, data_scale=args.data_scale, transform=transform)
-val_dataset   = FastDVDnetDataset(sequence_info=val_info, patch_size=patch_size, data_scale=args.data_scale)
+if args.dataset_type == "loreal":
+    train_dataset = FastDVDnetDataset(sequence_info=train_info, patch_size=patch_size, data_scale=args.data_scale, transform=transform)
+    val_dataset   = FastDVDnetDataset(sequence_info=val_info, patch_size=patch_size, data_scale=args.data_scale)
+elif args.dataset_type == "fmdd":
+    train_dataset = FMDDDataset(sequence_info=train_info, patch_size=patch_size, data_scale=args.data_scale, transform=transform, mode=args.fmdd_mode, gamma=args.gamma)
+    val_dataset   = FMDDDataset(sequence_info=val_info, patch_size=patch_size, data_scale=args.data_scale, mode=args.fmdd_mode, gamma=args.gamma)
 #test_dataset = FastDVDnetDataset(sequence_info=test_info, patch_size=patch_size, data_scale=args.data_scale)
 
 print(f"Train dataset size (stacks): {len(train_dataset)}")
@@ -213,20 +231,31 @@ val_dataloader   = DataLoader(val_dataset, batch_size=args.batch_size, num_worke
 # Guardar secuencias para referencia
 with open(os.path.join(sequences_dir, "train_sequences.txt"), "w") as f:
     for s_info in train_info:
-        f.write(f"{s_info[0]}\n")
+        if isinstance(s_info, dict): # FMDD
+            path = f"{s_info['modality']}/{s_info['seq_id']}"
+        else: # Loreal
+            path = s_info[0] if isinstance(s_info, (tuple, list)) else str(s_info)
+        f.write(f"{path}\n")
 
 with open(os.path.join(sequences_dir, "val_sequences.txt"), "w") as f:
     for s_info in val_info:
-        f.write(f"{s_info[0]}\n")
+        if isinstance(s_info, dict): # FMDD
+            path = f"{s_info['modality']}/{s_info['seq_id']}"
+        else: # Loreal
+            path = s_info[0] if isinstance(s_info, (tuple, list)) else str(s_info)
+        f.write(f"{path}\n")
 
 # with open(os.path.join(save_path, "test_sequences.txt"), "w") as f:
 #     for s_info in test_info:
 #         f.write(f"{s_info[0]}\n")
 
+# First batch load timing
+t0_first = datetime.now()
 for x, target in train_dataloader:
-    print("x shape after dataloader:", x.shape)
-    print("Target shape after dataloader:", target.shape)
-    break  # solo miro el primer batch
+    first_duration = (datetime.now() - t0_first).total_seconds()
+    print(f"First batch load time: {first_duration:.1f}s")
+    print(f"x shape: {x.shape}, target shape: {target.shape}")
+    break # Just one batch to warm up and verify
 
 # Choose model
 model = FastDVDnet(num_input_frames=5).to(device)
@@ -295,6 +324,7 @@ class EarlyStopping:
 
 early_stopping = EarlyStopping(patience=args.patience) if args.patience > 0 else None
 best_val_loss = float('inf')
+best_epoch = 0
 
 # --- EVALUACIÓN EPOCH 0 (Punto de partida) ---
 print("Evaluating Epoch 0 (baseline)...")
@@ -338,12 +368,27 @@ torch.cuda.empty_cache()
 epoch_losses = [avg_init_loss]
 val_losses = [avg_init_loss]
 for epoch in range(args.epochs):
+    epoch_start_time = datetime.now()
     wrapper.train()
     running_loss = 0.0
     # Antes del loop de batches:
     grad_accum = {name: 0.0 for name, p in model.named_parameters() if p.requires_grad}
     n_batches = 0
+    t0_epoch = datetime.now()
+    t_data_total = 0.0
+    t_start_fetch = datetime.now()
+    
     for i, (stack, target) in enumerate(train_dataloader):
+        t_data_total += (datetime.now() - t_start_fetch).total_seconds()
+        
+        # Guardar imagen de control (solo una vez en la vida del entrenamiento)
+        if epoch == 0 and i == 0:
+            debug_dir = os.path.join(args.output_path, "debug")
+            os.makedirs(debug_dir, exist_ok=True)
+            # Guardamos el frame central ruidoso [C, H, W] -> [H, W]
+            tifffile.imwrite(os.path.join(debug_dir, "control_noisy.tif"), stack[0, 2].cpu().numpy())
+            tifffile.imwrite(os.path.join(debug_dir, "control_gt.tif"), target[0, 0].cpu().numpy())
+            print(f"Control images saved to {debug_dir}")
         stack = stack.to(device)           # [B, 5, H, W]
         y_central = stack[:, 2:3, :, :]   # [B, 1, H, W]
 
@@ -373,18 +418,22 @@ for epoch in range(args.epochs):
             if param.requires_grad and param.grad is not None:
                 grad_accum[name] += param.grad.abs().mean().item()
         n_batches += 1
+        t_start_fetch = datetime.now() # Reset para medir espera del siguiente batch
 
     # # Diagnóstico de gradientes (una vez por época, último batch)
     # for name, param in model.named_parameters():
     #     if param.requires_grad and param.grad is not None:
     #         print(f"{name} | grad={param.grad.abs().mean():.2e} | val={param.abs().mean():.2e}")
-
+    train_duration = datetime.now() - t0_epoch
     # Validation loop
+    val_t0 = datetime.now()
     wrapper.eval()
     val_loss = 0.0
+    val_psnr = 0.0
     with torch.no_grad():
         for i, (stack, target) in enumerate(val_dataloader):
             stack = stack.to(device)
+            target = target.to(device)
             y_central = stack[:, 2:3, :, :]
             
             if isinstance(wrapper, R2RModel):
@@ -406,28 +455,41 @@ for epoch in range(args.epochs):
                 output = wrapper(y_central)
                 loss = loss_fn(y_central, output, physics, wrapper).mean()
                 val_loss += loss.item()
-            del output, stack, y_central
+            
+            # Cálculo de PSNR (asumiendo que target es Ground Truth)
+            # Solo tiene sentido si target es realmente limpio (como en FMDD o modo sintético)
+            if args.dataset_type == "fmdd" or (hasattr(args, "synthetic_dataset") and args.synthetic_dataset):
+                mse = torch.mean((output - target) ** 2)
+                if mse > 0:
+                    psnr = 10 * torch.log10(1.0 / mse)
+                    val_psnr += psnr.item()
+            
+            del output, stack, y_central, target
     
     torch.cuda.empty_cache()
-    avg_val_loss = val_loss / len(val_dataloader) if len(val_dataloader) > 0 else 0
+    val_duration = datetime.now() - val_t0
+
+    n_val_batches = len(val_dataloader)
+    avg_val_loss = val_loss / n_val_batches if n_val_batches > 0 else 0
+    avg_val_psnr = val_psnr / n_val_batches if n_val_batches > 0 else 0
     val_losses.append(avg_val_loss)
 
     epoch_loss = running_loss / len(train_dataloader)
     epoch_losses.append(epoch_loss)
     scheduler.step()    
     
-    # Save current loss history to a file so it can be resumed or analyzed
+    # Save current loss history
     np.save(os.path.join(losses_dir, "train_losses.npy"), np.array(epoch_losses))
     np.save(os.path.join(losses_dir, "val_losses.npy"), np.array(val_losses))
     
-    # for name, avg_grad in grad_accum.items():
-       # print(f"{name} | grad_mean_epoch={avg_grad / n_batches:.2e}")
     print(
     f"Epoch {epoch+1}, "
     f"Loss: {epoch_loss:.12f}, Val Loss: {avg_val_loss:.12f}, "
+    f"Val PSNR: {avg_val_psnr:.2f} dB, "
     f"lr: {optimizer.param_groups[0]['lr']:.2e}\n"
+    f"Time: Train: {train_duration.total_seconds():.1f}s (Data wait: {t_data_total:.1f}s), Val: {val_duration.total_seconds():.1f}s\n"
     )
-    logger.info(f"Epoch {epoch+1}/{args.epochs} - Loss: {epoch_loss:.12f} - Val Loss: {avg_val_loss:.12f} - Learning Rate: {optimizer.param_groups[0]['lr']:.2e}")
+    logger.info(f"Epoch {epoch+1}/{args.epochs} - Loss: {epoch_loss:.12f} - Val Loss: {avg_val_loss:.12f} - PSNR: {avg_val_psnr:.2f} - LR: {optimizer.param_groups[0]['lr']:.2e} - Train/Val time: {train_duration.total_seconds():.1f}s/{val_duration.total_seconds():.1f}s (Data: {t_data_total:.1f}s)")
 
     if (epoch+1) % 10 == 0: 
         this_ckpt_path = os.path.join(ckpt_path, f"epoch_{epoch+1}.pth")
@@ -442,6 +504,7 @@ for epoch in range(args.epochs):
     # Save best model
     if avg_val_loss < best_val_loss:
         best_val_loss = avg_val_loss
+        best_epoch = epoch + 1
         torch.save({
             "epoch": epoch + 1,
             "state_dict": model.state_dict(),
@@ -455,6 +518,8 @@ for epoch in range(args.epochs):
             print(f"Early stopping at epoch {epoch+1}")
             logger.info(f"Early stopping at epoch {epoch+1}")
             break
+
+print(f"Mejor epoca (best_model.pth): {best_epoch}")
 
 # Save final model state (in case early stopping happened or EPOCHS was not a multiple of 10)
 final_ckpt_path = os.path.join(ckpt_path, f"epoch_{epoch+1}.pth")

@@ -1,4 +1,5 @@
 import os
+import sys
 from os.path import dirname, join
 import argparse
 import time
@@ -6,8 +7,6 @@ import numpy as np
 
 import torch
 import torch.nn as nn
-
-import sys
 
 # --- CARGA DE RUTAS LOCALES ---
 def load_local_paths():
@@ -31,14 +30,14 @@ def load_local_paths():
                             sys.path.append(value)
 
 load_local_paths()
-from models_FastDVDnet_sans_noise_map import FastDVDnet
 
+from models_FastDVDnet_sans_noise_map import FastDVDnet
 import iio
 import tifffile
-
 from functions import *
 from physics import get_physics
 
+# CUDA check
 cuda = torch.cuda.is_available()
 if cuda:
     device = torch.device('cuda')
@@ -131,25 +130,82 @@ def eval(**args):
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
        
-    #Initialisation
-    ut = iio.read(args['input'] % (args['first']))
+    # Initialisation
+    input_path_raw = args['input']
+    has_template = "%" in input_path_raw
+    
+    if has_template:
+        input_path = input_path_raw % (args['first'])
+    else:
+        input_path = input_path_raw
+
+    if not os.path.exists(input_path):
+        print(f"ERROR: Input file not found: {input_path}")
+        print("Please check your path configuration in env_paths.sh")
+        sys.exit(1)
+        
+    ut = iio.read(input_path)
     H, W, _ = ut.shape
     H = 4*(H//4)
     W = 4*(W//4)
-    [a,b] = np.loadtxt(args['pre_processing_data'])
+
+    # Pre-processing data is optional (default a=1, b=0 for FMDD)
+    if args['pre_processing_data'] and os.path.exists(args['pre_processing_data']):
+        [a,b] = np.loadtxt(args['pre_processing_data'])
+    else:
+        print("No pre-processing file found. Using defaults a=1.0, b=0.0")
+        a, b = 1.0, 0.0
 
     model.eval()
 
-    for i in range(args['first']+2, args['last']-1):
-    
-        ut_moins_2 = reads_image(args['input']%(i-2), H, W, im_range=1)[:1]
-        ut_moins_1 = reads_image(args['input']%(i-1), H, W, im_range=1)[:1]
-        ut         = reads_image(args['input']%(i)  , H, W, im_range=1)[:1]
-        ut_plus_1  = reads_image(args['input']%(i+1), H, W, im_range=1)[:1]
-        ut_plus_2  = reads_image(args['input']%(i+2), H, W, im_range=1)[:1]
+    def add_poisson_noise(img, gamma):
+        """Adds synthetic Poisson noise [0, 1] matching dataset.py logic"""
+        if gamma is None:
+            return img
+        img = torch.clamp(img, min=0.0)
+        noisy = torch.poisson(img * gamma) / gamma
+        return noisy
 
-        inframes = [ut_moins_2, ut_moins_1, ut, ut_plus_1, ut_plus_2]
-        stack = torch.stack(inframes, dim=0).contiguous().view((1, 5, H, W)).cuda()
+    def calculate_psnr(img1, img2):
+        mse = torch.mean((img1 - img2) ** 2)
+        if mse == 0: return 100
+        return 20 * torch.log10(1.0 / torch.sqrt(mse))
+
+    psnrs = []
+    
+    # Si es sintético de imagen única, el rango puede ser solo [first]
+    if not has_template:
+        test_range = range(args['first'], args['first'] + 1)
+    else:
+        test_range = range(args['first']+2, args['last']-1)
+    
+    ns_suffix = f"_ns{args['n_samples']}" if args['n_samples'] > 1 else ""
+    
+    for i in test_range:
+    
+        if args['synthetic_test']:
+            # In synthetic mode, we assume the input is clean (GT) and we add noise
+            # We generate 5 realizations based on the central frame's intensity
+            path = args['input'] % (i) if has_template else args['input']
+            ut = reads_image(path, H, W, im_range=1)[:1]
+            frames = [add_poisson_noise(ut, args['gamma']) for _ in range(5)]
+            
+            # Siempre guardamos el ruidoso de entrada para comparar en modo sintético
+            noisy_out = frames[2].cpu().numpy().squeeze()
+            tifffile.imwrite(os.path.join(out_dir, f"input_noisy{ns_suffix}_{i:03d}.tif"), noisy_out)
+        else:
+            ut_moins_2 = reads_image(args['input']%(i-2), H, W, im_range=1)[:1]
+            ut_moins_1 = reads_image(args['input']%(i-1), H, W, im_range=1)[:1]
+            ut         = reads_image(args['input']%(i)  , H, W, im_range=1)[:1]
+            ut_plus_1  = reads_image(args['input']%(i+1), H, W, im_range=1)[:1]
+            ut_plus_2  = reads_image(args['input']%(i+2), H, W, im_range=1)[:1]
+            frames = [ut_moins_2, ut_moins_1, ut, ut_plus_1, ut_plus_2]
+            
+            if args['save_noisy']:
+                noisy_out = ut.cpu().numpy().squeeze()
+                tifffile.imwrite(os.path.join(out_dir, f"input_noisy{ns_suffix}_{i:03d}.tif"), noisy_out)
+
+        stack = torch.stack(frames, dim=0).contiguous().view((1, 5, H, W)).cuda()
 
         stack = linear_transform(stack, a, b, u=1) / args['data_scale'] # The frames can be in the range [0,9000]. here, we just normalize them to the range [0,1]
 
@@ -186,13 +242,25 @@ def eval(**args):
 
         out = linear_transform(out*args['data_scale'], a, b, u=1, inverse=True) # before inversing the linear transform, we unnormalize them back to the big range [0,9000]
 
+        if args['synthetic_test']:
+            current_psnr = calculate_psnr(ut.cuda(), out)
+            psnrs.append(current_psnr.item())
+            print(f"Frame {i:03d} | PSNR: {current_psnr.item():.2f} dB")
+
         out = out.detach().cpu().numpy().squeeze()
 
         print("Frame = {:02d}".format(i))
             
-        #store the result
-        tifffile.imwrite(args['output']%i, out)
+        # store the result
+        base, ext = os.path.splitext(args['output'])
+        out_path = (base + ns_suffix + ext) % i
+        tifffile.imwrite(out_path, out)
 
+    if args['synthetic_test'] and psnrs:
+        avg_psnr = sum(psnrs) / len(psnrs)
+        print("-" * 30)
+        print(f"PSNR Promedio: {avg_psnr:.2f} dB")
+        print("-" * 30)
 
 
 if __name__ == "__main__":
@@ -213,6 +281,8 @@ if __name__ == "__main__":
     parser.add_argument("--sigma"              , type=float, default=None       , help='Gaussian std (original scale)'                                               )
     parser.add_argument("--gamma"              , type=float, default=None       , help='Poisson gain (original scale)'                                               )
     parser.add_argument("--geometric_ensemble" , action='store_true'             , help='enable geometric TTA (rotations and flips)'                                  )
+    parser.add_argument("--synthetic_test"     , action='store_true'             , help='inject synthetic Poisson noise into clean input'                             )
+    parser.add_argument("--save_noisy"         , action='store_true'             , help='save the noisy realization for comparison'                                   )
 
     argspar = parser.parse_args()
 
