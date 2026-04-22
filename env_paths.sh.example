@@ -16,3 +16,6 @@ EXTERNAL_CODES_DIR="${WORKDIR}/sequences_for_self-supervised_tests/FastDVDnet_co
 
 # Default pretrained checkpoint
 DEFAULT_CKPT_PATH="${EXTERNAL_CODES_DIR}/FastDVDnet-pure_poisson-a=1-normalization_by_255.pth"
+
+# Path to FMDD dataset (optional, for FMDD experiments)
+FMDD_DIR="/home/diegosilvera/Descargas/FMDD"
