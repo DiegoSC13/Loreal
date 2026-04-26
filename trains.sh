@@ -65,6 +65,11 @@ CKPT="${DEFAULT_CKPT}"
 TIMESTAMP=$(date +"%y-%m-%d_%H-%M-%S")
 DATA_SCALE=255 #9000
 OUTPUT_BASE=./results/train_${TIMESTAMP}_${LOSS}_${DATASET_TYPE}
+mkdir -p "${OUTPUT_BASE}"
+printf "bash " > "${OUTPUT_BASE}/trains_command.sh"
+printf "%q " "$0" "$@" >> "${OUTPUT_BASE}/trains_command.sh"
+echo "" >> "${OUTPUT_BASE}/trains_command.sh"
+chmod +x "${OUTPUT_BASE}/trains_command.sh"
 BATCH_SIZE=16
 PATCH_SIZE="256 256"
 
