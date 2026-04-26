@@ -20,6 +20,16 @@ from losses import get_loss
 from physics import get_physics
 from deepinv.loss.r2r import R2RLoss, R2RModel
 from utils import *
+from skimage.metrics import peak_signal_noise_ratio as psnr_func
+from skimage.metrics import structural_similarity as ssim_func
+
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 # --- CARGA DE RUTAS LOCALES ---
 def load_local_paths():
@@ -111,6 +121,7 @@ args = parser.parse_args()
 
 #Seed
 seed=43
+set_seed(seed)
 
 # --- Escalado de hiperparámetros ---
 # Si los datos se dividen por data_scale, los hiperparámetros de ruido deben escalarse proporcionalmente
@@ -151,8 +162,8 @@ print(f"Python version: {platform.python_version()}")
 print(f"Command used: {shlex.join(sys.argv)}")
 
 # Set the global random seed and select device
-# torch.manual_seed(int(time.time())) # Para tener distinta semilla en cada entrenamiento
-generator = torch.Generator().manual_seed(seed) # Para tener reproducibilidad
+# set_seed already handled global torch seed
+generator = torch.Generator().manual_seed(seed) 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 #Checkpoints dir
@@ -362,11 +373,63 @@ with torch.no_grad():
         del output, stack, y_central
 
 avg_init_loss = initial_loss / num_batches_eval
-print(f"Epoch 0 Loss (proxy MSE): {avg_init_loss:.12f}\n")
+
+# Evaluamos también sobre el validation set para el baseline de Val Loss, PSNR y SSIM
+initial_val_loss = 0.0
+initial_val_psnr = 0.0
+initial_val_ssim = 0.0
+
+with torch.no_grad():
+    for i, (stack, target) in enumerate(val_dataloader):
+        stack = stack.to(device)
+        target = target.to(device)
+        y_central = stack[:, 2:3, :, :]
+        
+        if isinstance(wrapper, R2RModel):
+            wrapper.model.set_context(stack)
+        else:
+            wrapper.set_context(stack)
+
+        if isinstance(loss_fn, R2RLoss):
+            n_samples = 5 
+            batch_loss = 0
+            for _ in range(n_samples):
+                wrapper.training = True
+                output = wrapper(y_central, physics, update_parameters=True)
+                wrapper.training = False
+                batch_loss += loss_fn(y_central, output, physics, wrapper).mean().item()
+            initial_val_loss += batch_loss / n_samples
+        else:
+            output = wrapper(y_central)
+            loss_val = loss_fn(y_central, output, physics, wrapper).mean()
+            initial_val_loss += loss_val.item()
+        
+        if args.dataset_type == "fmdd" or (hasattr(args, "synthetic_dataset") and args.synthetic_dataset):
+            mse = torch.mean((output - target) ** 2)
+            if mse > 0:
+                psnr = 10 * torch.log10(1.0 / mse)
+                initial_val_psnr += psnr.item()
+                
+                out_np = output.detach().cpu().squeeze().numpy()
+                gt_np = target.detach().cpu().squeeze().numpy()
+                s_val = ssim_func(gt_np, out_np, data_range=1.0)
+                initial_val_ssim += s_val
+                
+        # Liberar memoria de GPU lo antes posible para evitar OOM
+        del output, stack, y_central, target
+
+n_val_batches = len(val_dataloader)
+avg_init_val_loss = initial_val_loss / n_val_batches if n_val_batches > 0 else 0
+avg_init_val_psnr = initial_val_psnr / n_val_batches if n_val_batches > 0 else 0
+avg_init_val_ssim = initial_val_ssim / n_val_batches if n_val_batches > 0 else 0
+
+print(f"Epoch 0 Train Loss: {avg_init_loss:.12f}, Val Loss: {avg_init_val_loss:.12f}, PSNR: {avg_init_val_psnr:.2f}dB, SSIM: {avg_init_val_ssim:.4f}\n")
 torch.cuda.empty_cache()
 
 epoch_losses = [avg_init_loss]
-val_losses = [avg_init_loss]
+val_losses = [avg_init_val_loss]
+val_psnrs = [avg_init_val_psnr]
+val_ssims = [avg_init_val_ssim]
 for epoch in range(args.epochs):
     epoch_start_time = datetime.now()
     wrapper.train()
@@ -430,6 +493,7 @@ for epoch in range(args.epochs):
     wrapper.eval()
     val_loss = 0.0
     val_psnr = 0.0
+    val_ssim = 0.0
     with torch.no_grad():
         for i, (stack, target) in enumerate(val_dataloader):
             stack = stack.to(device)
@@ -463,6 +527,12 @@ for epoch in range(args.epochs):
                 if mse > 0:
                     psnr = 10 * torch.log10(1.0 / mse)
                     val_psnr += psnr.item()
+                    
+                    # Compute SSIM
+                    out_np = output.detach().cpu().squeeze().numpy()
+                    gt_np = target.detach().cpu().squeeze().numpy()
+                    s_val = ssim_func(gt_np, out_np, data_range=1.0)
+                    val_ssim += s_val
             
             del output, stack, y_central, target
     
@@ -472,7 +542,10 @@ for epoch in range(args.epochs):
     n_val_batches = len(val_dataloader)
     avg_val_loss = val_loss / n_val_batches if n_val_batches > 0 else 0
     avg_val_psnr = val_psnr / n_val_batches if n_val_batches > 0 else 0
+    avg_val_ssim = val_ssim / n_val_batches if n_val_batches > 0 else 0
     val_losses.append(avg_val_loss)
+    val_psnrs.append(avg_val_psnr)
+    val_ssims.append(avg_val_ssim)
 
     epoch_loss = running_loss / len(train_dataloader)
     epoch_losses.append(epoch_loss)
@@ -485,11 +558,11 @@ for epoch in range(args.epochs):
     print(
     f"Epoch {epoch+1}, "
     f"Loss: {epoch_loss:.12f}, Val Loss: {avg_val_loss:.12f}, "
-    f"Val PSNR: {avg_val_psnr:.2f} dB, "
+    f"PSNR/SSIM: {avg_val_psnr:.2f}dB / {avg_val_ssim:.4f}, "
     f"lr: {optimizer.param_groups[0]['lr']:.2e}\n"
     f"Time: Train: {train_duration.total_seconds():.1f}s (Data wait: {t_data_total:.1f}s), Val: {val_duration.total_seconds():.1f}s\n"
     )
-    logger.info(f"Epoch {epoch+1}/{args.epochs} - Loss: {epoch_loss:.12f} - Val Loss: {avg_val_loss:.12f} - PSNR: {avg_val_psnr:.2f} - LR: {optimizer.param_groups[0]['lr']:.2e} - Train/Val time: {train_duration.total_seconds():.1f}s/{val_duration.total_seconds():.1f}s (Data: {t_data_total:.1f}s)")
+    logger.info(f"Epoch {epoch+1}/{args.epochs} - Loss: {epoch_loss:.12f} - Val Loss: {avg_val_loss:.12f} - PSNR: {avg_val_psnr:.2f} - SSIM: {avg_val_ssim:.4f} - LR: {optimizer.param_groups[0]['lr']:.2e}")
 
     if (epoch+1) % 10 == 0: 
         this_ckpt_path = os.path.join(ckpt_path, f"epoch_{epoch+1}.pth")
@@ -563,9 +636,9 @@ plt.savefig(os.path.join(losses_dir, "loss_plot.png"), dpi=200)
 
 # Also save as a text file for easy reading
 with open(os.path.join(losses_dir, "losses.txt"), "w") as f:
-    f.write("Epoch, TrainLoss, ValLoss\n")
-    for i, (tl, vl) in enumerate(zip(epoch_losses, val_losses)):
-        f.write(f"{i}, {tl:.12f}, {vl:.12f}\n")
+    f.write("Epoch, TrainLoss, ValLoss, ValPSNR, ValSSIM\n")
+    for i, (tl, vl, vp, vs) in enumerate(zip(epoch_losses, val_losses, val_psnrs, val_ssims)):
+        f.write(f"{i}, {tl:.12f}, {vl:.12f}, {vp:.4f}, {vs:.6f}\n")
 
 ####################################################################
 
