@@ -33,7 +33,7 @@ def set_seed(seed):
 
 # --- CARGA DE RUTAS LOCALES ---
 def load_local_paths():
-    config_path = os.path.join(os.path.dirname(__file__), 'env_paths.sh')
+    config_path = os.path.join(os.path.dirname(__file__), 'config.sh')
     if os.path.exists(config_path):
         env_vars = {}
         with open(config_path, 'r') as f:

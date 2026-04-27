@@ -10,7 +10,7 @@ import torch.nn as nn
 
 # --- CARGA DE RUTAS LOCALES ---
 def load_local_paths():
-    config_path = os.path.join(os.path.dirname(__file__), 'env_paths.sh')
+    config_path = os.path.join(os.path.dirname(__file__), 'config.sh')
     if os.path.exists(config_path):
         env_vars = {}
         with open(config_path, 'r') as f:
@@ -141,7 +141,7 @@ def eval(**args):
 
     if not os.path.exists(input_path):
         print(f"ERROR: Input file not found: {input_path}")
-        print("Please check your path configuration in env_paths.sh")
+        print("Please check your path configuration in config.sh")
         sys.exit(1)
         
     ut = iio.read(input_path)
@@ -194,11 +194,17 @@ def eval(**args):
             noisy_out = frames[2].cpu().numpy().squeeze()
             tifffile.imwrite(os.path.join(out_dir, f"input_noisy{ns_suffix}_{i:03d}.tif"), noisy_out)
         else:
-            ut_moins_2 = reads_image(args['input']%(i-2), H, W, im_range=1)[:1]
-            ut_moins_1 = reads_image(args['input']%(i-1), H, W, im_range=1)[:1]
-            ut         = reads_image(args['input']%(i)  , H, W, im_range=1)[:1]
-            ut_plus_1  = reads_image(args['input']%(i+1), H, W, im_range=1)[:1]
-            ut_plus_2  = reads_image(args['input']%(i+2), H, W, im_range=1)[:1]
+            path_m2 = args['input'] % (i-2) if has_template else args['input']
+            path_m1 = args['input'] % (i-1) if has_template else args['input']
+            path_0  = args['input'] % (i)   if has_template else args['input']
+            path_p1 = args['input'] % (i+1) if has_template else args['input']
+            path_p2 = args['input'] % (i+2) if has_template else args['input']
+            
+            ut_moins_2 = reads_image(path_m2, H, W, im_range=1)[:1]
+            ut_moins_1 = reads_image(path_m1, H, W, im_range=1)[:1]
+            ut         = reads_image(path_0,  H, W, im_range=1)[:1]
+            ut_plus_1  = reads_image(path_p1, H, W, im_range=1)[:1]
+            ut_plus_2  = reads_image(path_p2, H, W, im_range=1)[:1]
             frames = [ut_moins_2, ut_moins_1, ut, ut_plus_1, ut_plus_2]
             
             if args['save_noisy']:
