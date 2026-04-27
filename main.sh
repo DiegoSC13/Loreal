@@ -6,8 +6,8 @@
 
 # --- CARGAR CONFIGURACIÓN LOCAL ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ -f "${SCRIPT_DIR}/env_paths.sh" ]; then
-    source "${SCRIPT_DIR}/env_paths.sh"
+if [ -f "${SCRIPT_DIR}/config.sh" ]; then
+    source "${SCRIPT_DIR}/config.sh"
 fi
 
 # Variables de entorno con fallbacks
@@ -53,7 +53,7 @@ DIEGO_DIR="${WORKDIR}/diego/loreal_training_code"
 # Ajustar constantes según el dataset
 if [ "$DATASET_TYPE" == "fmdd" ]; then
     if [ -z "${FMDD_DIR}" ]; then
-        echo "Error: FMDD_DIR is not set in env_paths.sh"
+        echo "Error: FMDD_DIR is not set in config.sh"
         exit 1
     fi
     SEQUENCE_DIR=${FMDD_DIR}
@@ -66,17 +66,22 @@ TIMESTAMP=$(date +"%y-%m-%d_%H-%M-%S")
 DATA_SCALE=255 #9000
 OUTPUT_BASE=./results/train_${TIMESTAMP}_${LOSS}_${DATASET_TYPE}
 mkdir -p "${OUTPUT_BASE}"
-printf "bash " > "${OUTPUT_BASE}/trains_command.sh"
-printf "%q " "$0" "$@" >> "${OUTPUT_BASE}/trains_command.sh"
-echo "" >> "${OUTPUT_BASE}/trains_command.sh"
-chmod +x "${OUTPUT_BASE}/trains_command.sh"
+printf "bash " > "${OUTPUT_BASE}/main_command.sh"
+printf "%q " "$0" "$@" >> "${OUTPUT_BASE}/main_command.sh"
+echo "" >> "${OUTPUT_BASE}/main_command.sh"
+chmod +x "${OUTPUT_BASE}/main_command.sh"
 BATCH_SIZE=16
 PATCH_SIZE="256 256"
 
 # GAMMA se toma de los argumentos de entrada ahora
 
-INPUT_SEQ="${SEQUENCE_DIR}/HF4_Bruite_1024pix_Ex780nm_10pc_LineAccu12.tif_dir/image_%03d.tif"
-PREPROC="${SEQUENCE_DIR}/HF4_Bruite_1024pix_Ex780nm_10pc_LineAccu12.tif_dir/pre-processing.txt"
+if [ "$DATASET_TYPE" == "fmdd" ]; then
+    INPUT_SEQ="${SEQUENCE_DIR}/WideField_BPAE_G/gt/12/avg50.png"
+    PREPROC_ARG=""
+else
+    INPUT_SEQ="${SEQUENCE_DIR}/HF4_Bruite_1024pix_Ex780nm_10pc_LineAccu12.tif_dir/image_%03d.tif"
+    PREPROC_ARG="--pre_processing_data ${SEQUENCE_DIR}/HF4_Bruite_1024pix_Ex780nm_10pc_LineAccu12.tif_dir/pre-processing.txt"
+fi
 #NETWORK="../../sequences_for_self-supervised_tests/FastDVDnet_codes/universal_network_for_Poisson_noise.pth"
 
 for lr in "${LR_VALUES[@]}"; do
@@ -133,12 +138,12 @@ for lr in "${LR_VALUES[@]}"; do
 
     echo "Testing ${EXP_NAME} with BEST network: $NETWORK (Samples: ${TEST_SAMPLES})"
     TEST_LOGFILE="${OUTDIR}/test_best.log"
-    echo "Command: $PYTHON test4.py --input ${INPUT_SEQ} --output ${OUTDIR}/best_model/test_output_%03d.tif --pre_processing_data ${PREPROC} --first 0 --last 29 --network ${NETWORK} --data_scale ${DATA_SCALE} ${TEST_ARGS}" > ${TEST_LOGFILE}
+    echo "Command: $PYTHON test4.py --input ${INPUT_SEQ} --output ${OUTDIR}/best_model/test_output_%03d.tif ${PREPROC_ARG} --first 0 --last 29 --network ${NETWORK} --data_scale ${DATA_SCALE} ${TEST_ARGS}" > ${TEST_LOGFILE}
 
     $PYTHON test4.py \
       --input ${INPUT_SEQ} \
       --output ${OUTDIR}/best_model/test_output_%03d.tif \
-      --pre_processing_data ${PREPROC} \
+      ${PREPROC_ARG} \
       --first 0 \
       --last 29 \
       --network ${NETWORK} \
