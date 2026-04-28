@@ -131,6 +131,11 @@ for lr in "${LR_VALUES[@]}"; do
       TEST_ARGS="--n_samples 1"
     fi
 
+    # Añadir flags específicos para FMDD sintético
+    if [ "$DATASET_TYPE" == "fmdd" ] && [ "$FMDD_MODE" == "synthetic" ]; then
+      TEST_ARGS="${TEST_ARGS} --synthetic_test --save_noisy"
+    fi
+
     # Añadir geometric TTA si está activado
     if [ "$GEOMETRIC_TTA" = true ]; then
       TEST_ARGS="${TEST_ARGS} --geometric_ensemble"

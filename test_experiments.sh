@@ -31,18 +31,20 @@ if [[ "$BASE_DIR" == *"fmdd"* ]]; then
     DEFAULT_PREPROC=""
     DEFAULT_FIRST=0
     DEFAULT_LAST=0
-    DEFAULT_EXTRA="--synthetic_test --gamma 1.0"
+    DEFAULT_EXTRA="--synthetic_test --gamma 1.0 --n_samples 25 --alpha 0.15 --loss r2r_p --save_noisy"
+    DEFAULT_DATA_SCALE=255.0
 else
     DEFAULT_INPUT="${SEQUENCE_DIR_BASE}/HF1_Bruite_1024pix_Ex780nm_10pc_LineAccu12.tif_dir/image_%03d.tif"
     DEFAULT_PREPROC="${SEQUENCE_DIR_BASE}/HF1_Bruite_1024pix_Ex780nm_10pc_LineAccu12.tif_dir/pre-processing.txt"
     DEFAULT_FIRST=0
     DEFAULT_LAST=29
-    DEFAULT_EXTRA=""
+    DEFAULT_EXTRA="--save_noisy"
+    DEFAULT_DATA_SCALE=255.0
 fi
 
 INPUT_SEQ=${2:-"${DEFAULT_INPUT}"}
 PREPROC=${3:-"${DEFAULT_PREPROC}"}
-DATA_SCALE=${4:-255}
+DATA_SCALE=${4:-${DEFAULT_DATA_SCALE}}
 FIRST_FRAME=${5:-${DEFAULT_FIRST}}
 LAST_FRAME=${6:-${DEFAULT_LAST}}
 EXTRA_ARGS=${7:-"${DEFAULT_EXTRA}"}

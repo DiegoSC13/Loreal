@@ -405,12 +405,21 @@ with torch.no_grad():
             initial_val_loss += loss_val.item()
         
         if args.dataset_type == "fmdd" or (hasattr(args, "synthetic_dataset") and args.synthetic_dataset):
-            mse = torch.mean((output - target) ** 2)
+            # Inferencia limpia para PSNR/SSIM: bypass del R2RModel para evitar
+            # que la entrada sea re-corrompida (y1 = y + ruido extra) en lugar de y original.
+            with torch.no_grad():
+                if isinstance(wrapper, R2RModel):
+                    # wrapper.model es el SureWrapper; llamarlo directamente evita la re-corrupción
+                    wrapper.model.set_context(stack)
+                    clean_output = wrapper.model(y_central)
+                else:
+                    clean_output = wrapper(y_central)
+            mse = torch.mean((clean_output - target) ** 2)
             if mse > 0:
                 psnr = 10 * torch.log10(1.0 / mse)
                 initial_val_psnr += psnr.item()
                 
-                out_np = output.detach().cpu().squeeze().numpy()
+                out_np = clean_output.detach().cpu().squeeze().numpy()
                 gt_np = target.detach().cpu().squeeze().numpy()
                 s_val = ssim_func(gt_np, out_np, data_range=1.0)
                 initial_val_ssim += s_val
@@ -520,21 +529,32 @@ for epoch in range(args.epochs):
                 loss = loss_fn(y_central, output, physics, wrapper).mean()
                 val_loss += loss.item()
             
-            # Cálculo de PSNR (asumiendo que target es Ground Truth)
-            # Solo tiene sentido si target es realmente limpio (como en FMDD o modo sintético)
+            # Cálculo de PSNR/SSIM (asumiendo que target es Ground Truth).
+            # Solo tiene sentido si target es realmente limpio (como en FMDD o modo sintético).
+            # Usamos una inferencia LIMPIA (sin re-corrupción R2R) para medir calidad real.
             if args.dataset_type == "fmdd" or (hasattr(args, "synthetic_dataset") and args.synthetic_dataset):
-                mse = torch.mean((output - target) ** 2)
+                with torch.no_grad():
+                    if isinstance(wrapper, R2RModel):
+                        # wrapper.model es el SureWrapper; llamarlo directamente evita
+                        # que la entrada sea y1 (re-corrompida) en lugar de y_central original.
+                        wrapper.model.set_context(stack)
+                        clean_output = wrapper.model(y_central)
+                    else:
+                        clean_output = output  # ya es el output limpio
+                mse = torch.mean((clean_output - target) ** 2)
                 if mse > 0:
                     psnr = 10 * torch.log10(1.0 / mse)
                     val_psnr += psnr.item()
                     
                     # Compute SSIM
-                    out_np = output.detach().cpu().squeeze().numpy()
+                    out_np = clean_output.detach().cpu().squeeze().numpy()
                     gt_np = target.detach().cpu().squeeze().numpy()
                     s_val = ssim_func(gt_np, out_np, data_range=1.0)
                     val_ssim += s_val
             
             del output, stack, y_central, target
+            if 'clean_output' in dir():
+                del clean_output
     
     torch.cuda.empty_cache()
     val_duration = datetime.now() - val_t0

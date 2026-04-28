@@ -191,8 +191,9 @@ def eval(**args):
             frames = [add_poisson_noise(ut, args['gamma']) for _ in range(5)]
             
             # Siempre guardamos el ruidoso de entrada para comparar en modo sintético
-            noisy_out = frames[2].cpu().numpy().squeeze()
-            tifffile.imwrite(os.path.join(out_dir, f"input_noisy{ns_suffix}_{i:03d}.tif"), noisy_out)
+            if args['save_noisy'] and i == test_range[0]:
+                noisy_out = frames[2].cpu().numpy().squeeze()
+                tifffile.imwrite(os.path.join(out_dir, f"debug_y_noisy{ns_suffix}_{i:03d}.tif"), noisy_out)
         else:
             path_m2 = args['input'] % (i-2) if has_template else args['input']
             path_m1 = args['input'] % (i-1) if has_template else args['input']
@@ -207,9 +208,9 @@ def eval(**args):
             ut_plus_2  = reads_image(path_p2, H, W, im_range=1)[:1]
             frames = [ut_moins_2, ut_moins_1, ut, ut_plus_1, ut_plus_2]
             
-            if args['save_noisy']:
+            if args['save_noisy'] and i == test_range[0]:
                 noisy_out = ut.cpu().numpy().squeeze()
-                tifffile.imwrite(os.path.join(out_dir, f"input_noisy{ns_suffix}_{i:03d}.tif"), noisy_out)
+                tifffile.imwrite(os.path.join(out_dir, f"debug_y_noisy{ns_suffix}_{i:03d}.tif"), noisy_out)
 
         stack = torch.stack(frames, dim=0).contiguous().view((1, 5, H, W)).cuda()
 
@@ -235,6 +236,12 @@ def eval(**args):
                     y_recorrupted = y_central + args['alpha'] * noise
                     current_stack = stack.clone()
                     current_stack[:, 2:3, :, :] = y_recorrupted
+
+                    # Guardar la primera realización de R2R para inspección visual
+                    if _ == 0 and args['save_noisy'] and i == test_range[0]:
+                        r2r_to_save = linear_transform(y_recorrupted * args['data_scale'], a, b, u=1, inverse=True)
+                        r2r_to_save = r2r_to_save.detach().cpu().numpy().squeeze()
+                        tifffile.imwrite(os.path.join(out_dir, f"debug_y1_r2r{ns_suffix}_{i:03d}.tif"), r2r_to_save)
                 else:
                     current_stack = stack
 
@@ -261,6 +268,10 @@ def eval(**args):
         base, ext = os.path.splitext(args['output'])
         out_path = (base + ns_suffix + ext) % i
         tifffile.imwrite(out_path, out)
+        
+        # También guardamos explícitamente una copia con nombre debug para tener todo agrupado
+        if args['save_noisy'] and i == test_range[0]:
+            tifffile.imwrite(os.path.join(out_dir, f"debug_output{ns_suffix}_{i:03d}.tif"), out)
 
     if args['synthetic_test'] and psnrs:
         avg_psnr = sum(psnrs) / len(psnrs)
